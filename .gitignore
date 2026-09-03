@@ -1,0 +1,8 @@
+# Artefacts de test
+.tmp/
+*.log
+
+# Windows / editeurs
+Thumbs.db
+desktop.ini
+.vscode/

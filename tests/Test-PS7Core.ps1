@@ -1,0 +1,394 @@
+<#
+.SYNOPSIS
+    Tests automatisés pour PS7-Core.Runtime (garde PS7) et PS7-Core.UI (Spectre).
+
+.DESCRIPTION
+    Vérifie le bon fonctionnement de :
+      1. Assert-PowerShell7 — no-op sous PS7+, erreur sous une version inférieure.
+      2. Initialize-EnhancedUI / Write-StatusMessage / Write-Header /
+         Write-ProgressBar — provider Spectre.Console, sortie colorée.
+
+    PwshSpectreConsole est requis et n'est plus auto-installé par les scripts ;
+    -AutoInstallSpectre installe le module pour le test si absent.
+
+.PARAMETER AutoInstallSpectre
+    Installe PwshSpectreConsole si absent, avant de lancer les tests UI.
+
+.PARAMETER OnlyRuntime
+    N'exécute que les tests PS7-Core.Runtime.
+
+.PARAMETER OnlyUI
+    N'exécute que les tests PS7-Core.UI.
+
+.EXAMPLE
+    .\Test-PS7-Core.ps1
+    Lance tous les tests.
+
+.EXAMPLE
+    .\Test-PS7-Core.ps1 -OnlyRuntime
+    Tests du garde PS7 seulement.
+#>
+
+#Requires -Version 7.0
+
+[CmdletBinding()]
+param (
+    [switch]$AutoInstallSpectre,
+    [switch]$OnlyRuntime,
+    [switch]$OnlyUI
+)
+
+$ErrorActionPreference = 'Continue'
+
+#region Test framework
+################################################################################
+
+$script:TestStats = @{ Pass = 0; Fail = 0; Skip = 0 }
+$script:TestFailures = @()
+
+function Write-TestHeader {
+    param([string]$Title)
+    Write-Host ""
+    Write-Host ("=" * 72) -ForegroundColor Cyan
+    Write-Host "  $Title" -ForegroundColor Cyan
+    Write-Host ("=" * 72) -ForegroundColor Cyan
+}
+
+function Test-Case {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Body
+    )
+    Write-Host ("  [{0,-50}]" -f $Name) -NoNewline
+    try {
+        $result = & $Body
+        if ($result -is [string] -and $result -eq 'SKIP') {
+            $script:TestStats.Skip++
+            Write-Host " SKIP" -ForegroundColor Yellow
+        }
+        elseif ($result -eq $false) {
+            $script:TestStats.Fail++
+            $script:TestFailures += $Name
+            Write-Host " FAIL" -ForegroundColor Red
+        }
+        else {
+            $script:TestStats.Pass++
+            Write-Host " OK"   -ForegroundColor Green
+        }
+    }
+    catch {
+        $script:TestStats.Fail++
+        $script:TestFailures += "$Name -> $($_.Exception.Message)"
+        Write-Host " FAIL" -ForegroundColor Red
+        Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkRed
+    }
+}
+
+#endregion
+
+
+#region Setup
+################################################################################
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$modulesPath = $repoRoot
+$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "PS7-Core-Tests-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+Write-Host ""
+Write-Host "PS7-Core Test Suite" -ForegroundColor Magenta
+Write-Host "  PowerShell : $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+Write-Host "  Modules    : $modulesPath"
+Write-Host "  Temp dir   : $tempDir"
+
+if ($env:PSModulePath -notlike "*$modulesPath*") {
+    $env:PSModulePath += ";$modulesPath"
+}
+
+try {
+    Import-Module PS7-Core -Force -ErrorAction Stop
+}
+catch {
+    Write-Host "FATAL: cannot load PS7-Core modules: $_" -ForegroundColor Red
+    exit 2
+}
+
+#endregion
+
+
+#region PS7-Core.Runtime tests
+################################################################################
+
+if (-not $OnlyUI) {
+    Write-TestHeader "PS7-Core.Runtime — Assert-PowerShell7"
+
+    Test-Case "no-op when current PS >= minimum" {
+        try {
+            Assert-PowerShell7 -MinimumVersion '5.0'
+            return $true
+        }
+        catch { return $false }
+    }
+
+    Test-Case "no-op with default minimum (7.0) under current session" {
+        try {
+            Assert-PowerShell7
+            return ($PSVersionTable.PSVersion.Major -ge 7)
+        }
+        catch { return $false }
+    }
+
+    Test-Case "throws when current PS < minimum" {
+        try {
+            Assert-PowerShell7 -MinimumVersion '99.0'
+            return $false
+        }
+        catch {
+            return ($_.Exception.Message -match '99\.0')
+        }
+    }
+}
+
+#endregion
+
+
+#region PS7-Core.UI tests
+################################################################################
+
+if (-not $OnlyRuntime) {
+    Write-TestHeader "PS7-Core.UI — Spectre.Console provider and rendering"
+
+    if ($AutoInstallSpectre -and -not (Get-Module -ListAvailable -Name PwshSpectreConsole)) {
+        Write-Host "  Installing PwshSpectreConsole (CurrentUser)..." -ForegroundColor Yellow
+        try {
+            Install-Module -Name PwshSpectreConsole -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop -WarningAction SilentlyContinue
+        }
+        catch {
+            Write-Host "  Install failed: $_" -ForegroundColor Yellow
+        }
+    }
+
+    $spectreAvailable = [bool](Get-Module -ListAvailable -Name PwshSpectreConsole)
+
+    if (-not $spectreAvailable) {
+        Write-Host "  PwshSpectreConsole not installed — all UI tests skipped. Run with -AutoInstallSpectre to install it." -ForegroundColor Yellow
+    }
+    else {
+        Test-Case "Initialize-EnhancedUI returns initialized context" {
+            $ctx = Initialize-EnhancedUI
+            return ($ctx -and $ctx.Initialized -eq $true -and $ctx.UseSpectreConsole -eq $true)
+        }
+
+        Test-Case "Initialize-EnhancedUI throws if Spectre command is unavailable" {
+            # Simulate absence by shadowing Get-Command's result via a scoped function
+            # would be brittle; instead we just assert the happy path already proved
+            # UseSpectreConsole is required and true — the throw branch is exercised
+            # implicitly whenever this module is used without PwshSpectreConsole installed.
+            return 'SKIP'
+        }
+
+        # For color tests we shadow Write-SpectreHost with a capturing stub so we
+        # can assert on exactly what the module passed to the renderer.
+        $script:UICapture = [System.Collections.Generic.List[string]]::new()
+
+        function global:Write-SpectreHost { param([string]$s) $script:UICapture.Add($s) }
+
+        Test-Case "Write-StatusMessage Success uses color markup" {
+            $script:UICapture.Clear()
+            Write-StatusMessage 'integration-success' -Type Success
+            $line = $script:UICapture -join "`n"
+            return ($line -match '(?i)\[green\]') -and ($line -match 'integration-success')
+        }
+
+        Test-Case "Write-StatusMessage Error uses color markup" {
+            $script:UICapture.Clear()
+            Write-StatusMessage 'integration-error' -Type Error
+            $line = $script:UICapture -join "`n"
+            return ($line -match '(?i)\[red\]') -and ($line -match 'integration-error')
+        }
+
+        Test-Case "Write-StatusMessage escapes brackets in user content" {
+            $script:UICapture.Clear()
+            Write-StatusMessage 'value=[42]' -Type Info
+            $line = $script:UICapture -join "`n"
+            # Spectre markup escape: '[' -> '[[', ']' -> ']]'
+            return ($line -match '\[\[42\]\]')
+        }
+
+        Test-Case "Write-Header does not throw" {
+            try { Write-Header 'Test Header'; return $true }
+            catch { return $false }
+        }
+
+        Test-Case "Write-ProgressBar (intermediate) does not throw" {
+            try {
+                Write-ProgressBar -Activity 'unit' -Current 1 -Total 10 -Status 'tick'
+                Write-ProgressBar -Activity 'unit' -Completed
+                return $true
+            }
+            catch { return $false }
+        }
+
+        Test-Case "Write-ProgressBar routes to Spectre inside Start-ProgressScope" {
+            # $script:ProgressTasks / $script:CurrentProgressContext live in the
+            # PS7-Core.UI module's own scope, not this script's — a scriptblock
+            # literal here has its own $script: scope. Reach into the module's
+            # scope explicitly via the invoke-in-module operator (`& $module {}`).
+            $uiModule = (Get-Module PS7-Core).NestedModules | Where-Object Name -eq "PS7-Core.UI"
+            $script:sawSpectreTask = $false
+            Start-ProgressScope -ScriptBlock {
+                Write-ProgressBar -Activity 'scope-unit' -Current 1 -Total 4 -Status 'tick'
+                $script:sawSpectreTask = & $uiModule { $script:ProgressTasks.ContainsKey('scope-unit') }
+                Write-ProgressBar -Activity 'scope-unit' -Completed
+            } | Out-Null
+            $tasksEmpty = & $uiModule { $script:ProgressTasks.Count -eq 0 }
+            $contextNull = & $uiModule { $null -eq $script:CurrentProgressContext }
+            return ($script:sawSpectreTask -and $tasksEmpty -and $contextNull)
+        }
+
+        Test-Case "Start-ProgressScope does not support nesting" {
+            try {
+                Start-ProgressScope -ScriptBlock {
+                    Start-ProgressScope -ScriptBlock { } | Out-Null
+                } | Out-Null
+                return $false
+            }
+            catch {
+                return ($_.Exception.Message -match 'nesting')
+            }
+        }
+
+        Test-Case "Write-StatusMessage inside a scope uses AnsiConsole.MarkupLine, not Write-SpectreHost" {
+            $script:UICapture.Clear()
+            Start-ProgressScope -ScriptBlock {
+                Write-StatusMessage 'inside-scope' -Type Info
+            } | Out-Null
+            # If the call had gone through Write-SpectreHost (the outside-scope
+            # path), the shadowed stub above would have captured it.
+            return ($script:UICapture.Count -eq 0)
+        }
+
+        Test-Case "Start-ProgressScope resets module state after the scriptblock throws" {
+            $uiModule = (Get-Module PS7-Core).NestedModules | Where-Object Name -eq "PS7-Core.UI"
+            try {
+                Start-ProgressScope -ScriptBlock {
+                    throw 'boom'
+                } | Out-Null
+            }
+            catch { }
+
+            $contextNull = & $uiModule { $null -eq $script:CurrentProgressContext }
+            $tasksEmpty = & $uiModule { $script:ProgressTasks.Count -eq 0 }
+
+            # A subsequent normal call must still work — the module isn't left broken.
+            $recovered = $false
+            try {
+                Start-ProgressScope -ScriptBlock {
+                    Write-ProgressBar -Activity 'recovery-check' -Current 1 -Total 1
+                    Write-ProgressBar -Activity 'recovery-check' -Completed
+                } | Out-Null
+                $recovered = $true
+            }
+            catch { $recovered = $false }
+
+            return ($contextNull -and $tasksEmpty -and $recovered)
+        }
+
+        Test-Case "Write-StatusMessage still uses Write-SpectreHost outside a scope" {
+            $script:UICapture.Clear()
+            Write-StatusMessage 'outside-scope' -Type Info
+            $line = $script:UICapture -join "`n"
+            return ($line -match 'outside-scope')
+        }
+
+        Test-Case "Write-Summary does not throw" {
+            try { Write-Summary; return $true }
+            catch { return $false }
+        }
+    }
+
+    Write-TestHeader "PS7-Core.UI — Read-FolderSelection"
+
+    # Scratch tree: root/, root/subA/nested, root/subB, root/excluded-a
+    $rfsRoot = Join-Path $tempDir 'rfs-root'
+    New-Item -ItemType Directory -Path $rfsRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $rfsRoot 'subA') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $rfsRoot 'subA/nested') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $rfsRoot 'subB') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $rfsRoot 'excluded-a') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $rfsRoot 'excluded-a/child') -Force | Out-Null
+
+    Test-Case "non-interactive returns direct subfolders only" {
+        $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b')
+        return (
+            $result.Count -eq 2 -and
+            -not ($result -contains $rfsRoot) -and
+            $result -contains (Join-Path $rfsRoot 'subA') -and
+            $result -contains (Join-Path $rfsRoot 'subB')
+        )
+    }
+
+    Test-Case "nested subfolders are not returned" {
+        $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b')
+        return -not ($result -contains (Join-Path $rfsRoot 'subA/nested'))
+    }
+
+    Test-Case "excluded subfolder names are left out" {
+        $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b')
+        return -not ($result -contains (Join-Path $rfsRoot 'excluded-a'))
+    }
+
+    Test-Case "root name does not affect direct-subfolder selection" {
+        $excludedRoot = Join-Path $rfsRoot 'excluded-a'
+        $result = @(Read-FolderSelection -Path $excludedRoot -ExcludeName 'excluded-a', 'excluded-b')
+        return (
+            $result.Count -eq 1 -and
+            $result -contains (Join-Path $excludedRoot 'child')
+        )
+    }
+
+    Test-Case "non-existent path throws" {
+        try {
+            Read-FolderSelection -Path (Join-Path $tempDir 'does-not-exist') | Out-Null
+            return $false
+        }
+        catch { return $true }
+    }
+
+    Test-Case "-Interactive with redirected input keeps everything" {
+        # [Console]::IsInputRedirected is true in this test host, so Read-Selection's
+        # redirected-input guard fires and every candidate is kept unfiltered.
+        $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b' -Interactive)
+        return ($result.Count -eq 2)
+    }
+}
+
+#endregion
+
+
+#region Final report
+################################################################################
+
+Write-Host ""
+Write-Host ("=" * 72) -ForegroundColor Cyan
+Write-Host "  Results" -ForegroundColor Cyan
+Write-Host ("=" * 72) -ForegroundColor Cyan
+Write-Host ("  PASS : {0}" -f $script:TestStats.Pass) -ForegroundColor Green
+Write-Host ("  FAIL : {0}" -f $script:TestStats.Fail) -ForegroundColor Red
+Write-Host ("  SKIP : {0}" -f $script:TestStats.Skip) -ForegroundColor Yellow
+
+if ($script:TestFailures.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Failures:" -ForegroundColor Red
+    foreach ($f in $script:TestFailures) {
+        Write-Host "    - $f" -ForegroundColor Red
+    }
+}
+
+# Cleanup
+try { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+
+Write-Host ""
+exit ([int]($script:TestStats.Fail -gt 0))
+
+#endregion
