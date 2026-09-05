@@ -3,7 +3,7 @@
     RootModule        = 'PS7-Core.UI.psm1'
 
     # Version number of this module.
-    ModuleVersion     = '1.1.0'
+    ModuleVersion     = '1.2.0'
 
     # ID used to uniquely identify this module
     GUID              = 'd55fbb76-a581-4783-8f86-4ff3f74d42db'
@@ -26,6 +26,7 @@
     # Functions to export from this module
     FunctionsToExport = @(
         'Initialize-EnhancedUI',
+        'Get-UIContext',
         'Write-StatusMessage',
         'Write-ProgressBar',
         'Start-ProgressScope',

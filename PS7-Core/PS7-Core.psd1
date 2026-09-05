@@ -3,7 +3,7 @@
     RootModule        = 'PS7-Core.psm1'
 
     # Version number of this module.
-    ModuleVersion     = '1.1.0'
+    ModuleVersion     = '1.2.0'
 
     # ID used to uniquely identify this module
     GUID              = '2dc68349-bad7-414e-aff0-b0e58bf64d47'
@@ -37,6 +37,7 @@
 
         # PS7-Core.UI
         'Initialize-EnhancedUI',
+        'Get-UIContext',
         'Write-StatusMessage',
         'Write-ProgressBar',
         'Start-ProgressScope',

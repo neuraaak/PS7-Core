@@ -19,12 +19,50 @@ tests/                     suite de tests et test interactif
 
 ## Prérequis
 
-- PowerShell **7.0+**
+- PowerShell **7.0+** — seul prérequis strict.
 - [`PwshSpectreConsole`](https://www.powershellgallery.com/packages/PwshSpectreConsole)
-  ≥ 2.3.0 — `Install-Module -Name PwshSpectreConsole -Scope CurrentUser`
+  ≥ 2.3.0 — *optionnel* : `Install-Module -Name PwshSpectreConsole -Scope CurrentUser`
 
-`Initialize-EnhancedUI` lève une erreur si le module est absent : pas de mode
-dégradé, c'est délibéré.
+## Les deux backends d'affichage
+
+`PS7-Core.UI` a deux implémentations interchangeables :
+
+| Backend   | Base               | Usage                         |
+| --------- | ------------------ | ----------------------------- |
+| `Spectre` | PwshSpectreConsole | rendu riche, progression live |
+| `Native`  | PowerShell 7 pur   | aucune dépendance externe     |
+
+Le backend est résolu **une fois**, par `Initialize-EnhancedUI`, jamais par
+appel : le choix dépend de l'environnement, pas du site d'appel. Les fonctions
+publiques n'exposent donc aucun paramètre de backend, et **le code appelant est
+identique dans les deux modes**.
+
+```powershell
+Initialize-EnhancedUI                    # Auto : Spectre si dispo, natif sinon
+Initialize-EnhancedUI -Backend Native    # force le natif (tests, hôte contraint)
+Initialize-EnhancedUI -Backend Spectre   # erreur franche si Spectre manque
+```
+
+En `Auto`, la bascule vers le natif affiche **une ligne, une seule fois** : la
+dégradation n'est jamais silencieuse. Le backend actif se lit par
+`(Get-UIContext).Backend`.
+
+> **N'utilisez pas la variable `$UIContext`.** `Export-ModuleMember -Variable`
+> ne traverse pas la frontière de sous-module imbriqué : après
+> `Import-Module PS7-Core`, elle n'existe pas côté appelant. `Get-UIContext`
+> est le seul accès fiable.
+
+**Les barres ne se comportent pas pareil en fin de parcours** : Spectre laisse
+la sienne affichée à 100 % avec sa description, `Write-Progress` efface sa
+région et ne laisse rien. Aucun des deux n'est un défaut — mais un script dont
+la sortie est relue après coup n'aura de trace de progression qu'en Spectre.
+
+Le rendu natif est délibérément **plus pauvre**, pas équivalent : viser
+l'équivalence visuelle mène aux impasses déjà rencontrées (barre inline maison
+dont les lignes de statut se collent à la progression). La progression native
+utilise `Write-Progress` en vue `Minimal`, validé sous forte charge
+d'impression ; le filet de `Write-Header` retombe sur `-` quand l'encodage de
+sortie n'est pas UTF-8.
 
 ## Utilisation
 
@@ -79,8 +117,12 @@ jonction de répertoire vers `PS7-Core/`, posée à l'emplacement du script.
 | `Read-FolderSelection`  | Racine + sous-dossiers directs, exclusion par nom, sélection optionnelle |
 | `Start-ProgressScope`   | Bascule `Write-ProgressBar`/`Write-StatusMessage` en rendu Spectre live  |
 
-`Start-ProgressScope` remplace `Write-Progress` natif, qui corrompt
-visuellement l'affichage sous forte charge d'impression.
+`Start-ProgressScope` ouvre une région live Spectre. Avec le backend natif il
+n'y a pas de région à ouvrir — `Write-ProgressBar` utilise directement
+`Write-Progress` — mais **c'est toujours un vrai scope**, invoqué via `&` comme
+son homologue Spectre : le piège de portée ci-dessous se comporte donc à
+l'identique dans les deux backends, et un script validé sur l'un se comporte
+pareil sur l'autre.
 
 > **Piège de scope.** Le scriptblock passé à `Start-ProgressScope` s'exécute
 > dans un scope enfant. Toute variable réaffectée dedans (`=`, `+=`, `++`) crée
@@ -105,7 +147,44 @@ visuellement l'affichage sous forte charge d'impression.
 pwsh -NoProfile -File tests/Test-PS7Core.ps1
 ```
 
-21 cas automatisés. `tests/Test-ReadFolderSelection.ps1` est un test **manuel
+```powershell
+pwsh -NoProfile -File tests/Test-PS7Core.ps1 -Backend Native
+```
+
+### Contrôle d'un backend : robustesse + rendu
+
+```powershell
+pwsh -NoProfile -File tests/Show-UiBackend.Native.ps1
+pwsh -NoProfile -File tests/Show-UiBackend.Spectre.ps1
+```
+
+Deux volets, définis dans `tests/UiBackendChecks.ps1` — partagé par les deux
+lanceurs, pour que les backends soient mesurés exactement pareil et ne dérivent
+pas l'un de l'autre :
+
+- **Robustesse** — 27 assertions : arguments invalides, valeurs limites
+  (`Total = 0`, `Current` négatif ou hors borne, titre plus large que la
+  console), mauvais types, injection de markup, parité du piège de portée entre
+  backends. Sortie 1 si un cas échoue. `-SkipVisual` les exécute seules, sans
+  terminal. `-Thorough` pousse les entrées longues à l'extrême (message de
+  4000 caractères, titre de 400) : couvrant mais bruyant, car `Write-SpectreHost`
+  écrit droit sur la console et échappe à toute redirection de flux — le moteur
+  de rendu n'est délibérément pas neutralisé, vérifier qu'il encaisse une entrée
+  longue faisant partie de l'intérêt du test.
+- **Rendu** — sortie à inspecter à l'œil : les six types de message, une
+  progression seule, une progression avec messages entrelacés (le cas qui
+  corrompait l'affichage), deux barres simultanées. `-OnlyVisual` s'y limite.
+
+Un shell redirigé ne rend ni `Write-Progress` ni Spectre : le volet visuel n'a
+de sens que dans un **vrai terminal**.
+
+### Suite principale
+
+La suite doit passer **dans les deux backends**. `-Backend Native` force le
+chemin sans dépendance même sur une machine qui a Spectre : c'est la seule
+façon de le couvrir sans machine dédiée, et sans cette passe il pourrirait en
+silence jusqu'au jour où il devient le seul disponible. Les cas qui inspectent
+des internes propres à un backend sont ignorés proprement dans l'autre passe. `tests/Test-ReadFolderSelection.ps1` est un test **manuel
 interactif** : il construit une arborescence jetable et lance la vraie invite
 Spectre, nécessaire parce qu'une entrée redirigée fait toujours tomber
 `Read-SpectreMultiSelection` en mode non interactif.

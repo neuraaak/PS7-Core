@@ -3,13 +3,24 @@
     Enhanced PowerShell UI module.
 
 .DESCRIPTION
-    This module provides enhanced console output built on Spectre.Console
-    (PwshSpectreConsole). PS7+ and PwshSpectreConsole are required; the toolset
-    is PS7-only by design and does not fall back to a degraded provider.
+    Console output with two interchangeable backends:
+
+      Spectre  PwshSpectreConsole - rendu riche, progression live.
+      Native   PowerShell 7 pur, aucune dependance externe.
+
+    Le backend est resolu UNE FOIS par Initialize-EnhancedUI, jamais par appel :
+    le choix depend de l'environnement, pas du site d'appel. Les fonctions
+    publiques n'exposent donc aucun parametre de backend, et le code appelant
+    est identique dans les deux modes.
+
+    Les deux implementations sont dot-sourcees au chargement, TOUJOURS : definir
+    les fonctions Spectre ne coute rien sans la lib installee, et cela permet de
+    forcer le backend natif depuis une machine ou Spectre est present - sans
+    quoi le chemin natif ne serait testable nulle part.
 
 .NOTES
     Author:  Neuraaak
-    Version: 2.0.0
+    Version: 1.2.0
     License: MIT
 #>
 
@@ -18,10 +29,12 @@
 # UI context stores the current UI provider information
 $script:UIContext = @{
     UseSpectreConsole = $false
+    Backend           = 'None'
     Initialized       = $false
 }
 
-# Set while inside Start-ProgressScope; $null otherwise.
+# Set while inside a Spectre Start-ProgressScope; $null otherwise (always $null
+# with the native backend, which has no live region).
 $script:CurrentProgressContext = $null
 
 # Activity name -> Spectre.Console.ProgressTask, only populated while
@@ -29,9 +42,24 @@ $script:CurrentProgressContext = $null
 $script:ProgressTasks = @{}
 
 # The user scriptblock passed to Start-ProgressScope, while it is running.
-# $null otherwise. See Start-ProgressScope for why this is a module variable
-# rather than a closure capture.
+# $null otherwise. See Start-ProgressScopeSpectre for why this is a module
+# variable rather than a closure capture.
 $script:ActiveScopeScriptBlock = $null
+
+# Nesting sentinel, set by BOTH backends: the native scope opens no Spectre
+# context, so $script:CurrentProgressContext cannot be used to detect nesting.
+$script:InProgressScope = $false
+
+# The "falling back to native" notice is emitted once per session, not per call.
+$script:FallbackNoticeShown = $false
+
+#endregion
+
+
+#region Backend Loading
+
+. (Join-Path $PSScriptRoot 'Spectre\Spectre.ps1')
+. (Join-Path $PSScriptRoot 'Native\Native.ps1')
 
 #endregion
 
@@ -40,80 +68,81 @@ $script:ActiveScopeScriptBlock = $null
 
 <#
 .SYNOPSIS
-    Initializes the enhanced UI system with automatic provider detection.
+    Initializes the enhanced UI system and resolves the output backend.
 
 .DESCRIPTION
-    Loads PwshSpectreConsole and enables VT100 processing on the console.
-    Throws a terminating error if PwshSpectreConsole is not installed —
-    this toolset requires it, it is not auto-installed.
+    Enables VT100 processing and UTF-8 output, then selects a backend.
+
+    'Auto' uses Spectre when PwshSpectreConsole can be imported and falls back
+    to the native backend otherwise, announcing the fallback once so the
+    degradation is never silent. 'Spectre' throws if the module is missing -
+    an explicit request must fail loudly rather than degrade. 'Native' forces
+    the dependency-free backend even where Spectre is available, which is how
+    the native path is exercised by the test suite.
+
+.PARAMETER Backend
+    Auto (default), Spectre, or Native. Passing this parameter re-resolves the
+    backend even if the UI was already initialized.
 
 .EXAMPLE
     Initialize-EnhancedUI
-    Initializes UI with default settings.
+
+.EXAMPLE
+    Initialize-EnhancedUI -Backend Native
+    Forces the native backend, e.g. to test it on a machine that has Spectre.
 
 .OUTPUTS
     Hashtable containing UI context information.
 #>
 function Initialize-EnhancedUI {
     [CmdletBinding()]
-    param ()
+    param (
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Auto', 'Spectre', 'Native')]
+        [string]$Backend = 'Auto'
+    )
 
-    if ($script:UIContext.Initialized) {
-        Write-Verbose "UI already initialized."
+    $backendRequested = $PSBoundParameters.ContainsKey('Backend')
+
+    if ($script:UIContext.Initialized -and -not $backendRequested) {
+        Write-Verbose "UI already initialized (backend: $($script:UIContext.Backend))."
         return $script:UIContext
     }
 
-    # Legacy conhost (e.g. a .cmd double-clicked from Explorer) does not enable
-    # VT100/ANSI processing by default, which makes Spectre.Console's interactive
-    # prompts (Read-SpectreMultiSelection) throw and silently fall back to plain text.
-    if ($env:OS -eq 'Windows_NT') {
-        try {
-            $signature = @'
-[DllImport("kernel32.dll")] public static extern bool GetStdHandle(int handle, out System.IntPtr result);
-[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(System.IntPtr handle, out int mode);
-[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(System.IntPtr handle, int mode);
-'@
-            $type = Add-Type -MemberDefinition $signature -Name 'ConsoleVT' -Namespace 'PS7-Core.UI' -PassThru -ErrorAction Stop
+    if (-not $script:UIContext.Initialized) {
+        Initialize-ConsoleHostNative
+    }
 
-            $STD_OUTPUT_HANDLE = -11
-            $ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x4
+    switch ($Backend) {
+        'Native' {
+            $script:UIContext.UseSpectreConsole = $false
+        }
+        'Spectre' {
+            if (-not (Test-SpectreAvailable)) {
+                throw "Backend 'Spectre' was requested but PwshSpectreConsole is not installed. Install it with: Install-Module -Name PwshSpectreConsole -Scope CurrentUser"
+            }
+            $script:UIContext.UseSpectreConsole = $true
+        }
+        default {
+            if (Test-SpectreAvailable) {
+                $script:UIContext.UseSpectreConsole = $true
+            }
+            else {
+                $script:UIContext.UseSpectreConsole = $false
 
-            $handle = [System.IntPtr]::Zero
-            if ($type::GetStdHandle($STD_OUTPUT_HANDLE, [ref]$handle)) {
-                $mode = 0
-                if ($type::GetConsoleMode($handle, [ref]$mode)) {
-                    $null = $type::SetConsoleMode($handle, $mode -bor $ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+                # Never degrade silently: say it once, then stay quiet.
+                if (-not $script:FallbackNoticeShown) {
+                    $script:FallbackNoticeShown = $true
+                    Write-Host "PwshSpectreConsole not found - using the native display backend." -ForegroundColor DarkGray
                 }
             }
         }
-        catch {
-            Write-Verbose "Failed to enable VT100 processing on the console: $_"
-        }
     }
 
-    # Set console encoding to UTF-8 for emoji support
-    try {
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $OutputEncoding = [System.Text.Encoding]::UTF8
-    }
-    catch {
-        Write-Verbose "Failed to set UTF-8 encoding: $_"
-    }
-
-    if (-not (Get-Command Write-SpectreHost -ErrorAction SilentlyContinue)) {
-        if (Get-Module -ListAvailable -Name PwshSpectreConsole) {
-            Import-Module PwshSpectreConsole -ErrorAction SilentlyContinue
-        }
-    }
-
-    if (-not (Get-Command Write-SpectreHost -ErrorAction SilentlyContinue)) {
-        throw "PwshSpectreConsole is required but not installed. Install it with: Install-Module -Name PwshSpectreConsole -Scope CurrentUser"
-    }
-
-    $script:UIContext.UseSpectreConsole = $true
+    $script:UIContext.Backend = if ($script:UIContext.UseSpectreConsole) { 'Spectre' } else { 'Native' }
     $script:UIContext.Initialized = $true
 
-    Write-Verbose "UI initialized: Spectre=$($script:UIContext.UseSpectreConsole)"
+    Write-Verbose "UI initialized: backend=$($script:UIContext.Backend)"
 
     return $script:UIContext
 }
@@ -121,34 +150,64 @@ function Initialize-EnhancedUI {
 
 <#
 .SYNOPSIS
-    Runs a scriptblock inside a Spectre.Console live progress region.
+    Returns the current UI context (backend, initialization state).
 
 .DESCRIPTION
-    Wraps Invoke-SpectreCommandWithProgress (PwshSpectreConsole). While the
-    scriptblock runs, Write-ProgressBar and Write-StatusMessage automatically
-    route through Spectre's live renderer instead of native Write-Progress /
-    Write-SpectreHost, so a progress bar and a heavy stream of status
-    messages can coexist without corrupting the console.
+    Export-ModuleMember -Variable does NOT cross the nested-module boundary:
+    when PS7-Core.UI is loaded as a nested module of PS7-Core, $UIContext is
+    never published to the caller. A function is the only reliable way to read
+    the context through that boundary, so prefer this over the variable.
 
-    Does not support nesting: Spectre cannot render one Live region inside
-    another. Interactive prompts (Read-Selection, Read-FolderSelection) must
-    run outside any Start-ProgressScope call.
+.EXAMPLE
+    if ((Get-UIContext).Backend -eq 'Native') { ... }
 
-    An exception thrown inside the scriptblock surfaces to the caller wrapped
-    by Invoke-SpectreCommandWithProgress's own exception handling, which loses
-    the original ErrorRecord's category/type info — a caller matching on
-    exception type around Start-ProgressScope should be aware of this.
+.OUTPUTS
+    Hashtable. Keys: Backend, UseSpectreConsole, Initialized.
+#>
+function Get-UIContext {
+    [CmdletBinding()]
+    param ()
+
+    return $script:UIContext
+}
+
+
+<#
+.SYNOPSIS
+    Runs a scriptblock inside a progress scope.
+
+.DESCRIPTION
+    With the Spectre backend, wraps Invoke-SpectreCommandWithProgress: while the
+    scriptblock runs, Write-ProgressBar and Write-StatusMessage route through
+    Spectre's live renderer, so a progress bar and a heavy stream of status
+    messages coexist without corrupting the console.
+
+    With the native backend there is no live region to open - Write-ProgressBar
+    uses Write-Progress directly, which holds up under print load. The scope is
+    still a REAL scope, invoked through '&' exactly like the Spectre one, so the
+    child-scope pitfall below behaves identically in both backends: a script
+    validated on one backend behaves the same on the other.
+
+    Does not support nesting, in either backend.
+
+    IMPORTANT (child scope): the scriptblock runs in a new child scope. Any
+    variable reassigned inside it (=, +=, ++) creates a hidden local copy that is
+    lost on exit. Mutating a member of an existing object ($table[$k] = $v,
+    $list.Add(...)) is fine. To accumulate, use
+    [System.Collections.Generic.List[object]] and .Add() rather than += on an array.
+
+    Interactive prompts (Read-Selection, Read-FolderSelection) must run OUTSIDE
+    any scope: Spectre cannot nest two live regions.
 
 .PARAMETER ScriptBlock
-    The work to run. Receives one positional argument, the active
-    [Spectre.Console.ProgressContext] — most callers do not need it
-    directly since Write-ProgressBar picks it up automatically.
+    The work to run. Receives one positional argument: the active
+    [Spectre.Console.ProgressContext] with the Spectre backend, $null with the
+    native one. Most callers do not need it - Write-ProgressBar picks it up.
 
 .EXAMPLE
     Start-ProgressScope -ScriptBlock {
         for ($i = 1; $i -le $total; $i++) {
             Write-ProgressBar -Activity "Scanning" -Current $i -Total $total
-            Write-StatusMessage "Processed file $i" -Type Info
         }
         Write-ProgressBar -Activity "Scanning" -Completed
     }
@@ -164,48 +223,29 @@ function Start-ProgressScope {
         $null = Initialize-EnhancedUI
     }
 
-    if ($null -ne $script:CurrentProgressContext) {
+    if ($script:InProgressScope) {
         throw "Start-ProgressScope does not support nesting."
     }
 
-    # Note: deliberately NOT using .GetNewClosure() here. Spectre invokes this
-    # scriptblock from deep inside its own callback (via Progress.Start()), and
-    # GetNewClosure() would detach the scriptblock into a private copy of the
-    # module's $script: variables — writes to $script:CurrentProgressContext
-    # inside the closure would then be invisible to Write-ProgressBar /
-    # Write-StatusMessage, which read the real module scope (verified empirically:
-    # the closure saw its own write, but the rest of the module still saw $null).
-    # A plain scriptblock literal defined in this .psm1 already resolves $script:
-    # to the module's scope regardless of the call stack it's invoked from, so we
-    # stash the user scriptblock in a module variable instead of a closure capture.
-    $script:ActiveScopeScriptBlock = $ScriptBlock
-
-    $wrapped = {
-        param([Spectre.Console.ProgressContext]$Context)
-
-        $script:CurrentProgressContext = $Context
-        $script:ProgressTasks = @{}
-        try {
-            & $script:ActiveScopeScriptBlock $Context
+    $script:InProgressScope = $true
+    try {
+        if ($script:UIContext.UseSpectreConsole) {
+            return Start-ProgressScopeSpectre -ScriptBlock $ScriptBlock
         }
-        finally {
-            $script:CurrentProgressContext = $null
-            $script:ProgressTasks = @{}
-            $script:ActiveScopeScriptBlock = $null
-        }
+        return Start-ProgressScopeNative -ScriptBlock $ScriptBlock
     }
-
-    return Invoke-SpectreCommandWithProgress -ScriptBlock $wrapped
+    finally {
+        $script:InProgressScope = $false
+        $script:CurrentProgressContext = $null
+        $script:ProgressTasks = @{}
+        $script:ActiveScopeScriptBlock = $null
+    }
 }
 
 
 <#
 .SYNOPSIS
-    Writes colored status messages using the best available output method.
-
-.DESCRIPTION
-    Displays messages with appropriate coloring based on message type, using
-    Spectre.Console.
+    Writes colored status messages through the active backend.
 
 .PARAMETER Message
     The message to display.
@@ -215,14 +255,17 @@ function Start-ProgressScope {
 
 .EXAMPLE
     Write-StatusMessage "Operation completed" -Type Success
-
-.EXAMPLE
-    Write-StatusMessage "File not found" -Type Error
 #>
 function Write-StatusMessage {
     [CmdletBinding()]
     param (
+        # AllowNull + AllowEmptyString : sans eux, passer $null a un parametre
+        # Mandatory ne leve PAS, PowerShell ouvre une invite interactive et le
+        # script se fige indefiniment. Pour une fonction d'affichage, un blocage
+        # est le pire resultat possible : on accepte, et on imprime une ligne vide.
         [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter(Mandatory = $false)]
@@ -230,34 +273,15 @@ function Write-StatusMessage {
         [string]$Type = 'Info'
     )
 
-    # Ensure UI is initialized
     if (-not $script:UIContext.Initialized) {
         $null = Initialize-EnhancedUI
     }
 
-    # Use Spectre.Console if available (PS7+).
-    # Markup is required for color — Write-SpectreHost without [tags] is plain text.
-    # We escape user content's [ and ] to avoid breaking the markup parser.
     if ($script:UIContext.UseSpectreConsole) {
-        $safe = $Message -replace '\[', '[[' -replace '\]', ']]'
-        $markup = switch ($Type) {
-            'Info' { "[cyan]$safe[/]" }
-            'Success' { "[green]OK:[/] $safe" }
-            'Warning' { "[yellow]WARN:[/] $safe" }
-            'Error' { "[red]ERROR:[/] $safe" }
-            'Skipped' { "[grey]SKIP:[/] $safe" }
-            'Debug' { "[grey]DEBUG:[/] $safe" }
-        }
-
-        if ($null -ne $script:CurrentProgressContext) {
-            # Write-SpectreHost glitches when called from inside a live Spectre
-            # progress region (verified manually, see Start-ProgressScope docs);
-            # AnsiConsole.MarkupLine does not.
-            [Spectre.Console.AnsiConsole]::MarkupLine($markup)
-        }
-        else {
-            Write-SpectreHost $markup
-        }
+        Write-StatusMessageSpectre -Message $Message -Type $Type
+    }
+    else {
+        Write-StatusMessageNative -Message $Message -Type $Type
     }
 }
 
@@ -267,7 +291,10 @@ function Write-StatusMessage {
     Displays a progress indicator for operations.
 
 .DESCRIPTION
-    Shows progress using native Write-Progress.
+    Inside a Spectre progress scope, drives a task of the live ProgressContext
+    (one per distinct Activity). Everywhere else - native backend, or outside any
+    scope - uses native Write-Progress, which occupies a dedicated terminal
+    region and never pollutes the text stream.
 
 .PARAMETER Activity
     The activity description.
@@ -282,22 +309,16 @@ function Write-StatusMessage {
     Additional status information to display.
 
 .PARAMETER Id
-    The progress bar ID for nested progress bars (used with standard Write-Progress).
+    The progress bar ID for nested progress bars (native rendering only).
 
 .PARAMETER ParentId
-    The parent progress bar ID for nested progress bars (used with standard Write-Progress).
+    The parent progress bar ID for nested progress bars (native rendering only).
 
 .PARAMETER Completed
-    Switch to indicate the operation is completed and the progress bar should be removed.
+    Switch to indicate the operation is completed and the bar should be removed.
 
 .EXAMPLE
     Write-ProgressBar -Activity "Processing files" -Current 50 -Total 100
-
-.EXAMPLE
-    Write-ProgressBar -Activity "Processing files" -Current 50 -Total 100 -Status "file.txt"
-
-.EXAMPLE
-    Write-ProgressBar -Activity "Processing files" -Completed
 #>
 function Write-ProgressBar {
     [CmdletBinding()]
@@ -324,64 +345,18 @@ function Write-ProgressBar {
         [switch]$Completed
     )
 
-    # Ensure UI is initialized
     if (-not $script:UIContext.Initialized) {
         $null = Initialize-EnhancedUI
     }
 
+    # Dispatch on the live context, not on the backend: the native backend never
+    # sets one, so it always lands on Write-Progress.
     if ($null -ne $script:CurrentProgressContext) {
-        # Inside Start-ProgressScope: render via Spectre's live ProgressContext,
-        # one task per distinct Activity, so bar + Write-StatusMessage logs
-        # coexist without corrupting the console (native Write-Progress can,
-        # under heavy print volume — see Start-ProgressScope docs).
-        if (-not $script:ProgressTasks.ContainsKey($Activity)) {
-            $script:ProgressTasks[$Activity] = $script:CurrentProgressContext.AddTask($Activity)
-        }
-        $task = $script:ProgressTasks[$Activity]
-
-        if ($Completed) {
-            $task.Value = 100
-            $task.StopTask()
-            $script:ProgressTasks.Remove($Activity)
-            return
-        }
-
-        $percentComplete = if ($Total -gt 0) { ($Current / $Total) * 100 } else { 0 }
-        $percentComplete = [Math]::Min(100, [Math]::Max(0, $percentComplete))
-
-        $task.Description = if ($Status) { "$Activity - $Status" } else { $Activity }
-        $task.Value = $percentComplete
+        Write-ProgressBarSpectre -Activity $Activity -Current $Current -Total $Total -Status $Status -Completed:$Completed
         return
     }
 
-    # Handle completion
-    if ($Completed) {
-        Write-Progress -Activity $Activity -Id $Id -Completed
-        return
-    }
-
-    # Always delegate to native Write-Progress.
-    # Reasons:
-    #   - Write-SpectreHost does not honor -NoNewline reliably across versions,
-    #     so a custom inline progress bar collides with subsequent Write-Host calls
-    #     (status lines like "RENAMED:" end up glued to "Processing: file.jpg").
-    #   - Native Write-Progress uses a dedicated terminal region and never pollutes
-    #     the text output stream.
-    $percentComplete = if ($Total -gt 0) { ($Current / $Total) * 100 } else { 0 }
-    $percentComplete = [Math]::Min(100, [Math]::Max(0, $percentComplete))
-
-    $progressParams = @{
-        Activity        = $Activity
-        Status          = if ($Status) { $Status } else { "$Current of $Total" }
-        PercentComplete = $percentComplete
-        Id              = $Id
-    }
-
-    if ($ParentId -ge 0) {
-        $progressParams['ParentId'] = $ParentId
-    }
-
-    Write-Progress @progressParams
+    Write-ProgressBarNative -Activity $Activity -Current $Current -Total $Total -Status $Status -Id $Id -ParentId $ParentId -Completed:$Completed
 }
 
 
@@ -390,19 +365,18 @@ function Write-ProgressBar {
     Displays a formatted header.
 
 .DESCRIPTION
-    Shows a prominent header using a Spectre.Console Rule.
+    A Spectre Rule with the Spectre backend; a plain horizontal rule built from
+    box-drawing characters with the native one. The native rendering is
+    deliberately poorer - matching Spectre pixel for pixel is not the goal.
 
 .PARAMETER Title
     The header title.
 
 .PARAMETER Color
-    The header color (Spectre.Console color name).
+    The header color.
 
 .EXAMPLE
     Write-Header "My Application"
-
-.EXAMPLE
-    Write-Header "Processing Complete" -Color Green
 #>
 function Write-Header {
     [CmdletBinding()]
@@ -414,17 +388,17 @@ function Write-Header {
         [string]$Color = 'Cyan'
     )
 
-    # Ensure UI is initialized
     if (-not $script:UIContext.Initialized) {
         $null = Initialize-EnhancedUI
     }
 
-    try {
-        Write-SpectreRule -Title $Title -Color $Color
+    if ($script:UIContext.UseSpectreConsole) {
+        Write-HeaderSpectre -Title $Title -Color $Color
     }
-    catch {
-        Write-SpectreHost $Title
+    else {
+        Write-HeaderNative -Title $Title -Color $Color
     }
+
     Write-Host ""
 }
 
@@ -432,9 +406,6 @@ function Write-Header {
 <#
 .SYNOPSIS
     Displays a formatted summary section.
-
-.DESCRIPTION
-    Shows a summary header similar to Write-Header but optimized for result display.
 
 .PARAMETER Title
     The summary title (default: "Summary").
@@ -454,18 +425,16 @@ function Write-Summary {
     Write-Header $Title -Color Green
 }
 
+
 <#
 .SYNOPSIS
-    Prompts the user to pick a subset of items with a checkbox list.
+    Prompts the user to pick a subset of items.
 
 .DESCRIPTION
-    Displays an interactive multi-selection prompt and returns the selected
-    items, preserving their original type.
-
-    Uses Read-SpectreMultiSelection for a checkbox list. If Spectre's prompt
-    throws (e.g. a non-interactive terminal it couldn't detect via redirected
-    streams), falls back to a numbered text prompt: "1,3,5", "*" for all,
-    empty for none.
+    With the Spectre backend, shows a checkbox list (Read-SpectreMultiSelection).
+    With the native backend - or when the Spectre prompt itself throws at runtime
+    - shows a numbered text prompt: "1,3,5", "*" for all, empty for none. Both
+    return the selected items with their original type preserved.
 
     The prompt needs a real console. When input is redirected (scheduled task,
     piped invocation), no prompt can be shown: the function warns and returns
@@ -485,11 +454,6 @@ function Write-Summary {
 
 .EXAMPLE
     $keep = Read-Selection -Items $folders -Message "Folders to process"
-    Ask which folders to keep, and get the selected DirectoryInfo objects back.
-
-.EXAMPLE
-    $keep = Read-Selection -Items $targets -LabelProperty 'Label'
-    Label each entry with its Label property instead of its string form.
 #>
 function Read-Selection {
     [CmdletBinding()]
@@ -508,7 +472,6 @@ function Read-Selection {
         [int]$PageSize = 15
     )
 
-    # Ensure UI is initialized
     if (-not $script:UIContext.Initialized) {
         $null = Initialize-EnhancedUI
     }
@@ -535,73 +498,19 @@ function Read-Selection {
         }
     )
 
-    try {
-        $selected = @(Read-SpectreMultiSelection -Message $Message `
-                -Choices $choices `
-                -ChoiceLabelProperty 'Label' `
-                -PageSize $PageSize `
-                -AllowEmpty)
-
-        return @(
-            foreach ($selection in $selected) {
-                $valueProperty = $selection.PSObject.Properties['Value']
-
-                if ($null -ne $valueProperty) {
-                    $valueProperty.Value
-                    continue
-                }
-
-                $matchingChoice = @($choices | Where-Object { $_.Label -eq [string]$selection } | Select-Object -First 1)
-
-                if ($matchingChoice.Count -eq 1) {
-                    $matchingChoice[0].Value
-                }
-                else {
-                    Write-StatusMessage "Ignored unknown selection: $selection" -Type Warning
-                }
-            }
-        )
-    }
-    catch {
-        Write-StatusMessage "Interactive prompt failed, falling back to text mode - $($_.Exception.Message)" -Type Warning
-    }
-
-    # Text fallback when the Spectre prompt itself fails at runtime
-    Write-Host ""
-    Write-StatusMessage $Message -Type Info
-
-    for ($i = 0; $i -lt $choices.Count; $i++) {
-        Write-Host ("  [{0}] {1}" -f ($i + 1), $choices[$i].Label)
-    }
-
-    Write-Host ""
-    $answer = Read-Host "Entries to keep (e.g. 1,3,5 - '*' for all - empty for none)"
-    $answer = $answer.Trim()
-
-    if ([string]::IsNullOrEmpty($answer)) {
-        return @()
-    }
-
-    if ($answer -eq '*') {
-        return $Items
-    }
-
-    $picked = @()
-
-    foreach ($token in $answer.Split(',')) {
-        $token = $token.Trim()
-        $index = 0
-
-        if ([int]::TryParse($token, [ref]$index) -and $index -ge 1 -and $index -le $choices.Count) {
-            $picked += $choices[$index - 1].Value
+    if ($script:UIContext.UseSpectreConsole) {
+        try {
+            return Read-SelectionSpectre -Items $Items -Choices $choices -Message $Message -PageSize $PageSize
         }
-        else {
-            Write-StatusMessage "Ignored invalid entry: $token" -Type Warning
+        catch {
+            Write-StatusMessage "Interactive prompt failed, falling back to text mode - $($_.Exception.Message)" -Type Warning
         }
     }
 
-    return @($picked)
+    return Read-SelectionNative -Items $Items -Choices $choices -Message $Message
 }
+
+
 
 <#
 .SYNOPSIS
@@ -697,6 +606,7 @@ function Read-FolderSelection {
 # Export module members
 Export-ModuleMember -Function @(
     'Initialize-EnhancedUI',
+    'Get-UIContext',
     'Write-StatusMessage',
     'Write-ProgressBar',
     'Start-ProgressScope',

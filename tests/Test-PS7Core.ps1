@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Tests automatisés pour PS7-Core.Runtime (garde PS7) et PS7-Core.UI (Spectre).
 
@@ -35,7 +35,12 @@
 param (
     [switch]$AutoInstallSpectre,
     [switch]$OnlyRuntime,
-    [switch]$OnlyUI
+    [switch]$OnlyUI,
+
+    # Backend UI a tester. 'Native' force le backend sans dependance meme sur une
+    # machine qui a Spectre : c'est ainsi que le chemin natif est couvert.
+    [ValidateSet('Auto', 'Spectre', 'Native')]
+    [string]$Backend = 'Auto'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -170,21 +175,39 @@ if (-not $OnlyRuntime) {
 
     $spectreAvailable = [bool](Get-Module -ListAvailable -Name PwshSpectreConsole)
 
-    if (-not $spectreAvailable) {
-        Write-Host "  PwshSpectreConsole not installed — all UI tests skipped. Run with -AutoInstallSpectre to install it." -ForegroundColor Yellow
+    # Backend effectivement teste dans cette passe.
+    $script:TargetBackend = switch ($Backend) {
+        'Native' { 'Native' }
+        'Spectre' { 'Spectre' }
+        default { if ($spectreAvailable) { 'Spectre' } else { 'Native' } }
+    }
+    $script:IsSpectreRun = ($script:TargetBackend -eq 'Spectre')
+
+    Write-Host "  Backend teste : $($script:TargetBackend)" -ForegroundColor DarkGray
+
+    if ($script:IsSpectreRun -and -not $spectreAvailable) {
+        Write-Host "  PwshSpectreConsole not installed — UI tests skipped. Run with -AutoInstallSpectre, or -Backend Native." -ForegroundColor Yellow
     }
     else {
         Test-Case "Initialize-EnhancedUI returns initialized context" {
-            $ctx = Initialize-EnhancedUI
-            return ($ctx -and $ctx.Initialized -eq $true -and $ctx.UseSpectreConsole -eq $true)
+            $ctx = Initialize-EnhancedUI -Backend $script:TargetBackend
+            return ($ctx -and $ctx.Initialized -eq $true -and $ctx.Backend -eq $script:TargetBackend)
         }
 
-        Test-Case "Initialize-EnhancedUI throws if Spectre command is unavailable" {
-            # Simulate absence by shadowing Get-Command's result via a scoped function
-            # would be brittle; instead we just assert the happy path already proved
-            # UseSpectreConsole is required and true — the throw branch is exercised
-            # implicitly whenever this module is used without PwshSpectreConsole installed.
-            return 'SKIP'
+        Test-Case "Initialize-EnhancedUI -Backend Spectre throws when Spectre is missing" {
+            if ($spectreAvailable) { return 'SKIP' }
+            try {
+                Initialize-EnhancedUI -Backend Spectre | Out-Null
+                return "aucune erreur levee"
+            }
+            catch { return $true }
+        }
+
+        Test-Case "le backend natif reste selectionnable meme avec Spectre installe" {
+            $ctx = Initialize-EnhancedUI -Backend Native
+            $ok = ($ctx.Backend -eq 'Native') -and ($ctx.UseSpectreConsole -eq $false)
+            $null = Initialize-EnhancedUI -Backend $script:TargetBackend
+            return $ok
         }
 
         # For color tests we shadow Write-SpectreHost with a capturing stub so we
@@ -194,6 +217,7 @@ if (-not $OnlyRuntime) {
         function global:Write-SpectreHost { param([string]$s) $script:UICapture.Add($s) }
 
         Test-Case "Write-StatusMessage Success uses color markup" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             $script:UICapture.Clear()
             Write-StatusMessage 'integration-success' -Type Success
             $line = $script:UICapture -join "`n"
@@ -201,6 +225,7 @@ if (-not $OnlyRuntime) {
         }
 
         Test-Case "Write-StatusMessage Error uses color markup" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             $script:UICapture.Clear()
             Write-StatusMessage 'integration-error' -Type Error
             $line = $script:UICapture -join "`n"
@@ -208,6 +233,7 @@ if (-not $OnlyRuntime) {
         }
 
         Test-Case "Write-StatusMessage escapes brackets in user content" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             $script:UICapture.Clear()
             Write-StatusMessage 'value=[42]' -Type Info
             $line = $script:UICapture -join "`n"
@@ -230,6 +256,7 @@ if (-not $OnlyRuntime) {
         }
 
         Test-Case "Write-ProgressBar routes to Spectre inside Start-ProgressScope" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             # $script:ProgressTasks / $script:CurrentProgressContext live in the
             # PS7-Core.UI module's own scope, not this script's — a scriptblock
             # literal here has its own $script: scope. Reach into the module's
@@ -259,6 +286,7 @@ if (-not $OnlyRuntime) {
         }
 
         Test-Case "Write-StatusMessage inside a scope uses AnsiConsole.MarkupLine, not Write-SpectreHost" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             $script:UICapture.Clear()
             Start-ProgressScope -ScriptBlock {
                 Write-StatusMessage 'inside-scope' -Type Info
@@ -295,10 +323,46 @@ if (-not $OnlyRuntime) {
         }
 
         Test-Case "Write-StatusMessage still uses Write-SpectreHost outside a scope" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
             $script:UICapture.Clear()
             Write-StatusMessage 'outside-scope' -Type Info
             $line = $script:UICapture -join "`n"
             return ($line -match 'outside-scope')
+        }
+
+        Test-Case "backend natif : Write-StatusMessage produit une sortie prefixee" {
+            if ($script:IsSpectreRun) { return 'SKIP' }
+            $out = (Write-StatusMessage 'native-success' -Type Success 6>&1 | Out-String)
+            return ($out -match 'OK:') -and ($out -match 'native-success')
+        }
+
+        Test-Case "backend natif : chaque type de message est rendu" {
+            if ($script:IsSpectreRun) { return 'SKIP' }
+            foreach ($t in @('Info', 'Success', 'Warning', 'Error', 'Skipped', 'Debug')) {
+                $out = (Write-StatusMessage "type-$t" -Type $t 6>&1 | Out-String)
+                if ($out -notmatch "type-$t") { return "type $t sans sortie" }
+            }
+            return $true
+        }
+
+        Test-Case "backend natif : Write-Header trace une regle avec le titre" {
+            if ($script:IsSpectreRun) { return 'SKIP' }
+            $out = (Write-Header 'Titre natif' 6>&1 | Out-String)
+            # Le filet est U+2500 en UTF-8, '-' sinon : le test suit la meme regle
+            # que Get-RuleCharNative plutot que de supposer un encodage.
+            $rule = if (-not [Console]::IsOutputRedirected -and [Console]::OutputEncoding.CodePage -eq 65001) { [char]0x2500 } else { '-' }
+            return ($out -match 'Titre natif') -and ($out.Contains([string]$rule))
+        }
+
+        Test-Case "backend natif : Start-ProgressScope execute le scriptblock" {
+            if ($script:IsSpectreRun) { return 'SKIP' }
+            $marker = [System.Collections.Generic.List[object]]::new()
+            Start-ProgressScope -ScriptBlock {
+                Write-ProgressBar -Activity 'natif' -Current 1 -Total 2
+                $marker.Add('execute')
+                Write-ProgressBar -Activity 'natif' -Completed
+            }
+            return ($marker.Count -eq 1 -and $marker[0] -eq 'execute')
         }
 
         Test-Case "Write-Summary does not throw" {
