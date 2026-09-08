@@ -2,9 +2,9 @@
 
 Bibliothèque de modules PowerShell réutilisables, **PowerShell 7+ uniquement**.
 
-Le nom porte la contrainte : ce module suppose PS7 et Spectre.Console, sans
-aucun repli. Un éventuel `PS5-Core` vivrait à côté sans conflit de nom ni de
-GUID.
+Le nom porte la contrainte : ce module suppose PS7, et rien d'autre —
+Spectre.Console est utilisé s'il est là, sans être requis. Un éventuel
+`PS5-Core` vivrait à côté sans conflit de nom ni de GUID.
 
 ## Contenu
 
@@ -12,7 +12,7 @@ GUID.
 PS7-Core/                  le module (cible de la jonction d'installation)
 ├── PS7-Core.psd1/.psm1    méta-module : charge les trois sous-modules
 ├── PS7-Core.Runtime/      garde d'exécution PS7
-├── PS7-Core.UI/           console Spectre.Console
+├── PS7-Core.UI/           console, deux backends (Spectre / natif)
 └── PS7-Core.Crypto/       hachage de fichiers et de chaînes
 tests/                     suite de tests et test interactif
 ```
@@ -47,10 +47,12 @@ En `Auto`, la bascule vers le natif affiche **une ligne, une seule fois** : la
 dégradation n'est jamais silencieuse. Le backend actif se lit par
 `(Get-UIContext).Backend`.
 
-> **N'utilisez pas la variable `$UIContext`.** `Export-ModuleMember -Variable`
-> ne traverse pas la frontière de sous-module imbriqué : après
-> `Import-Module PS7-Core`, elle n'existe pas côté appelant. `Get-UIContext`
-> est le seul accès fiable.
+> **`Get-UIContext` est le seul accès.** L'état vit dans une variable de
+> module qui n'est pas exportée : `Export-ModuleMember -Variable` ne traverse
+> pas la frontière de sous-module imbriqué, donc `$UIContext` n'existerait côté
+> appelant qu'en import direct de `PS7-Core.UI`, jamais après
+> `Import-Module PS7-Core`. Plutôt qu'un accès qui marche d'un côté et échoue en
+> silence de l'autre, il n'y en a qu'un.
 
 **Les barres ne se comportent pas pareil en fin de parcours** : Spectre laisse
 la sienne affichée à 100 % avec sa description, `Write-Progress` efface sa
@@ -82,12 +84,26 @@ le motif recommandé.
 > les atteindre, passer par
 > `(Get-Module PS7-Core).NestedModules | Where-Object Name -eq 'PS7-Core.UI'`.
 
-Dans un script, épingler la version :
+Dans un script, épingler la version **après** l'import :
 
 ```powershell
 #Requires -Version 7.0
-#Requires -Modules @{ ModuleName = 'PS7-Core'; ModuleVersion = '1.1.0' }
+
+$env:PSModulePath += ";<dossier parent de PS7-Core>"
+try { Import-Module PS7-Core -ErrorAction Stop }
+catch { throw "PS7-Core introuvable. Lancez le script d'installation du projet." }
+
+$ps7Core = Get-Module PS7-Core
+if ($ps7Core.Version -lt [version]'1.2.0') {
+    throw "PS7-Core $($ps7Core.Version) est trop ancien, 1.2.0 minimum requis."
+}
 ```
+
+> **N'utilisez pas `#Requires -Modules` ici.** La directive est évaluée *avant*
+> le corps du script, donc avant que celui-ci ait complété `PSModulePath` : avec
+> une liaison par jonction elle échoue systématiquement. Le contrôle de version
+> se fait donc après l'import, et **hors du `try`** — sinon une version
+> insuffisante serait rapportée comme un module introuvable.
 
 ## Installation
 
@@ -108,14 +124,15 @@ jonction de répertoire vers `PS7-Core/`, posée à l'emplacement du script.
 
 | Fonction                | Rôle                                                                     |
 | ----------------------- | ------------------------------------------------------------------------ |
-| `Initialize-EnhancedUI` | Initialise la console Spectre ; erreur si absente                        |
+| `Initialize-EnhancedUI` | Initialise la console et résout le backend (`Auto`/`Spectre`/`Native`)  |
 | `Write-Header`          | En-tête de section                                                       |
-| `Write-StatusMessage`   | Message typé (`Info`, `Success`, `Warning`, `Error`)                     |
+| `Get-UIContext`         | Backend actif et état d'initialisation                                  |
+| `Write-StatusMessage`   | Message typé (`Info`, `Success`, `Warning`, `Error`, `Skipped`, `Debug`) |
 | `Write-ProgressBar`     | Barre de progression                                                     |
 | `Write-Summary`         | Résumé de fin d'exécution                                                |
 | `Read-Selection`        | Invite à cocher générique (Spectre), repli texte si l'appel échoue       |
 | `Read-FolderSelection`  | Racine + sous-dossiers directs, exclusion par nom, sélection optionnelle |
-| `Start-ProgressScope`   | Bascule `Write-ProgressBar`/`Write-StatusMessage` en rendu Spectre live  |
+| `Start-ProgressScope`   | Bascule `Write-ProgressBar`/`Write-StatusMessage` en rendu Spectre live |
 
 `Start-ProgressScope` ouvre une région live Spectre. Avec le backend natif il
 n'y a pas de région à ouvrir — `Write-ProgressBar` utilise directement

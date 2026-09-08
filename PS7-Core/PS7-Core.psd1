@@ -55,8 +55,10 @@
     # Cmdlets to export from this module
     CmdletsToExport   = @()
 
-    # Variables to export from this module
-    VariablesToExport = @('UIContext')
+    # Variables to export from this module. Deliberately empty: Export-ModuleMember
+    # -Variable does not cross the nested-module boundary, so declaring $UIContext
+    # here promised an export that never materialised. Get-UIContext is the access.
+    VariablesToExport = @()
 
     # Aliases to export from this module
     AliasesToExport   = @()

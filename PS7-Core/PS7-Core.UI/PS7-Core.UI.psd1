@@ -18,7 +18,7 @@
     Copyright         = '(c) 2026 Neuraaak. MIT License.'
 
     # Description of the functionality provided by this module
-    Description       = 'Enhanced console UI built on Spectre.Console (PwshSpectreConsole). Requires PS7+ and PwshSpectreConsole.'
+    Description       = 'Enhanced console UI with two interchangeable backends: Spectre (PwshSpectreConsole) and Native (pure PowerShell 7, no external dependency). Requires PS7+; PwshSpectreConsole is optional.'
 
     # Minimum version of the PowerShell engine required by this module
     PowerShellVersion = '7.0'
@@ -39,8 +39,10 @@
     # Cmdlets to export from this module
     CmdletsToExport   = @()
 
-    # Variables to export from this module
-    VariablesToExport = @('UIContext')
+    # Variables to export from this module. Deliberately empty: Export-ModuleMember
+    # -Variable does not cross the nested-module boundary, so declaring $UIContext
+    # here promised an export that never materialised. Get-UIContext is the access.
+    VariablesToExport = @()
 
     # Aliases to export from this module
     AliasesToExport   = @()
@@ -48,7 +50,7 @@
     # Private data to pass to the module specified in RootModule/ModuleToProcess
     PrivateData       = @{
         PSData = @{
-            Tags         = @('UI', 'Console', 'Spectre', 'Output', 'Color')
+            Tags         = @('UI', 'Console', 'Spectre', 'Native', 'Output', 'Color')
             LicenseUri   = ''
             ProjectUri   = ''
             ReleaseNotes = 'v2.0.0 - Spectre.Console-only, PSWriteColor/PS5 fallback removed.'
