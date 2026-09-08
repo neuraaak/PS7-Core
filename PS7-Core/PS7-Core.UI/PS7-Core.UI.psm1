@@ -20,7 +20,6 @@
 
 .NOTES
     Author:  Neuraaak
-    Version: 1.2.0
     License: MIT
 #>
 

@@ -94,8 +94,8 @@ try { Import-Module PS7-Core -ErrorAction Stop }
 catch { throw "PS7-Core introuvable. Lancez le script d'installation du projet." }
 
 $ps7Core = Get-Module PS7-Core
-if ($ps7Core.Version -lt [version]'1.2.0') {
-    throw "PS7-Core $($ps7Core.Version) est trop ancien, 1.2.0 minimum requis."
+if ($ps7Core.Version -lt [version]'1.2.1') {
+    throw "PS7-Core $($ps7Core.Version) est trop ancien, 1.2.1 minimum requis."
 }
 ```
 
@@ -205,6 +205,16 @@ des internes propres à un backend sont ignorés proprement dans l'autre passe. 
 interactif** : il construit une arborescence jetable et lance la vraie invite
 Spectre, nécessaire parce qu'une entrée redirigée fait toujours tomber
 `Read-SpectreMultiSelection` en mode non interactif.
+
+## Versionnage
+
+**Un seul numéro pour toute la bibliothèque** : les quatre manifestes portent le
+même `ModuleVersion` et bougent ensemble. Les sous-modules ne s'expédient jamais
+seuls — la jonction cible le dossier parent et le consommateur importe
+`PS7-Core` — donc une version propre à chacun ne renseignerait personne et ne
+ferait que dériver. `ModuleVersion` fait foi : les blocs `.NOTES` ne portent
+plus de numéro, et l'historique cumulatif vit dans le seul `ReleaseNotes` du
+manifeste racine.
 
 ## Ajouter une fonction
 
