@@ -68,8 +68,11 @@ function Get-FileHashExtended {
         $fileStream = $null
 
         try {
-            # Validate file exists
-            if (-not (Test-Path -Path $Path -PathType Leaf)) {
+            # -LiteralPath, pas -Path : ce dernier traite les crochets comme un
+            # motif joker, donc un nom parfaitement valide comme 'copie[1].txt'
+            # — la forme canonique d'un doublon telecharge — serait rapporte
+            # introuvable. Le reste de la fonction est deja litteral (OpenRead).
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
                 Write-Error "File not found: $Path"
                 return $null
             }
