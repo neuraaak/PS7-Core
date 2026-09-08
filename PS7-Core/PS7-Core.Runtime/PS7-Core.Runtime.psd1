@@ -27,7 +27,7 @@
     PowerShellVersion = '7.0'
 
     # Functions to export from this module
-    FunctionsToExport = @('Assert-PowerShell7')
+    FunctionsToExport = @('Assert-PowerShell7', 'Initialize-Logging', 'Write-Log', 'Get-LogContext')
 
     # Cmdlets to export from this module
     CmdletsToExport   = @()

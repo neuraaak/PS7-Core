@@ -37,6 +37,9 @@
     FunctionsToExport = @(
         # PS7-Core.Runtime
         'Assert-PowerShell7',
+        'Initialize-Logging',
+        'Write-Log',
+        'Get-LogContext',
 
         # PS7-Core.UI
         'Initialize-EnhancedUI',

@@ -159,6 +159,69 @@ if (-not $OnlyUI) {
 #endregion
 
 
+#region PS7-Core.Runtime logging tests
+################################################################################
+
+if (-not $OnlyUI) {
+    Write-TestHeader "PS7-Core.Runtime — Logging"
+
+    Test-Case "no log file before Initialize-Logging" {
+        $p = Join-Path $tempDir 'never-created.log'
+        Write-Log -Message 'ignored'
+        return (-not (Test-Path $p)) -and ((Get-LogContext).Enabled -eq $false)
+    }
+
+    Test-Case "Initialize-Logging creates the file and Write-Log appends a line" {
+        $p = Join-Path $tempDir 'basic.log'
+        Initialize-Logging -Path $p
+        Write-Log -Message 'hello world'
+        if (-not (Test-Path $p)) { return $false }
+        $line = (Get-Content -Path $p | Where-Object { $_ -ne '' })[-1]
+        return ($line -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[INFO   \] hello world$')
+    }
+
+    Test-Case "Get-LogContext reports the active path and level" {
+        $p = Join-Path $tempDir 'context.log'
+        Initialize-Logging -Path $p -MinimumLevel Debug
+        $ctx = Get-LogContext
+        return ($ctx.Enabled -eq $true) -and ($ctx.MinimumLevel -eq 'Debug') -and ($ctx.Path -eq $p)
+    }
+
+    Test-Case "MinimumLevel filters out lower levels" {
+        $p = Join-Path $tempDir 'filter.log'
+        Initialize-Logging -Path $p -MinimumLevel Warning
+        Write-Log -Message 'dropped' -Level Info
+        Write-Log -Message 'kept' -Level Error
+        $content = Get-Content -Path $p -Raw
+        return ($content -notmatch 'dropped') -and ($content -match 'kept')
+    }
+
+    Test-Case "a write failure disables logging instead of throwing" {
+        $sub = Join-Path $tempDir 'doomed'
+        $p = Join-Path $sub 'ok-then-broken.log'
+        Initialize-Logging -Path $p
+        Write-Log -Message 'first'
+        # Le repertoire parent disparait : l'ecriture suivante ne peut pas aboutir.
+        Remove-Item -Path $sub -Recurse -Force
+        try {
+            Write-Log -Message 'boom' -WarningAction SilentlyContinue
+        }
+        catch { return $false }
+        return ((Get-LogContext).Enabled -eq $false)
+    }
+
+    Test-Case "Initialize-Logging throws on an unusable path" {
+        try {
+            Initialize-Logging -Path 'Z:\no-such-volume\deep\x.log'
+            return $false
+        }
+        catch { return $true }
+    }
+}
+
+#endregion
+
+
 #region PS7-Core.UI tests
 ################################################################################
 
