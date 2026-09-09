@@ -2,8 +2,11 @@
     # Script module or binary module file associated with this manifest.
     RootModule        = 'PS7-Core.psm1'
 
-    # Version number of this module.
-    ModuleVersion     = '1.2.0'
+    # Version number of this module. Single source of truth for the whole
+    # library: the four manifests move together. The submodules never ship on
+    # their own — the junction targets the parent and consumers import PS7-Core —
+    # so a version of their own would inform nobody and drift instead.
+    ModuleVersion     = '1.2.1'
 
     # ID used to uniquely identify this module
     GUID              = '2dc68349-bad7-414e-aff0-b0e58bf64d47'
@@ -55,8 +58,10 @@
     # Cmdlets to export from this module
     CmdletsToExport   = @()
 
-    # Variables to export from this module
-    VariablesToExport = @('UIContext')
+    # Variables to export from this module. Deliberately empty: Export-ModuleMember
+    # -Variable does not cross the nested-module boundary, so declaring $UIContext
+    # here promised an export that never materialised. Get-UIContext is the access.
+    VariablesToExport = @()
 
     # Aliases to export from this module
     AliasesToExport   = @()
@@ -67,10 +72,24 @@
             Tags         = @('PowerShell', 'Utilities', 'UI', 'Crypto', 'Runtime', 'Core')
             LicenseUri   = ''
             ProjectUri   = ''
+            # Cumulative history for the whole library. The submodule manifests
+            # carry none: one version, one changelog.
             ReleaseNotes = @'
+v1.2.1
+- PS7-Core.Crypto: Get-FileHashExtended now resolves paths literally; a name
+  containing brackets ('copie[1].txt') was reported as not found.
+- PS7-Core.Crypto: covered by the test suite, previously untested.
+- PS7-Core.UI: $UIContext is no longer declared as an exported variable - the
+  export never crossed the nested-module boundary. Use Get-UIContext.
+- Single version across the four manifests.
+
+v1.2.0
+- PS7-Core.UI: interchangeable Spectre / Native backends, resolved once by
+  Initialize-EnhancedUI. PwshSpectreConsole is now optional.
+
 v1.1.0 - PS7-only
 - PS7-Core.Runtime: Assert-PowerShell7 guard (re-invocation logic removed)
-- PS7-Core.UI: Enhanced console UI built on Spectre.Console only
+- PS7-Core.UI: Enhanced console UI built on Spectre.Console
 - PS7-Core.Crypto: Cryptographic hashing for files and strings
 '@
         }

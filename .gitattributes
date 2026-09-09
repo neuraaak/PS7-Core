@@ -1,0 +1,25 @@
+# Normalisation par defaut : git decide, stockage en LF.
+* text=auto
+
+# Sources PowerShell : CRLF garanti dans l'arbre de travail, quelle que soit la
+# configuration core.autocrlf du poste qui clone. PowerShell 7 lit du LF sans
+# aucun probleme — l'epinglage sert la COHERENCE du depot, pas le moteur : sans
+# lui, l'arbre de travail derive fichier par fichier au gre des outils qui les
+# editent, et on se retrouve avec des fichiers mixtes.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Encodage : contrairement a PS5-Core, ce depot n'exige PAS de BOM. PowerShell 7
+# suppose UTF-8 par defaut et lit correctement un fichier sans BOM ; certains
+# fichiers d'ici en ont un, d'autres non, et c'est sans consequence. Ne pas
+# transposer ici la contrainte stricte de PS5-Core, ou l'absence de BOM fait lire
+# les .ps1 en ANSI a Windows PowerShell 5.1 et corrompt les accents.
+
+# Documentation : LF, c'est ce qu'attendent les rendus web.
+*.md text eol=lf
+
+# Fichiers a ne jamais convertir.
+*.png binary
+*.jpg binary
+*.ico binary

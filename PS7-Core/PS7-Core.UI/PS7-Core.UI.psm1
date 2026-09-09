@@ -20,7 +20,6 @@
 
 .NOTES
     Author:  Neuraaak
-    Version: 1.2.0
     License: MIT
 #>
 
@@ -153,10 +152,12 @@ function Initialize-EnhancedUI {
     Returns the current UI context (backend, initialization state).
 
 .DESCRIPTION
-    Export-ModuleMember -Variable does NOT cross the nested-module boundary:
-    when PS7-Core.UI is loaded as a nested module of PS7-Core, $UIContext is
-    never published to the caller. A function is the only reliable way to read
-    the context through that boundary, so prefer this over the variable.
+    The only supported way to read the UI context. The module state lives in
+    $script:UIContext and is NOT exported: Export-ModuleMember -Variable does not
+    cross the nested-module boundary, so when PS7-Core.UI is loaded as a nested
+    module of PS7-Core the variable never reaches the caller. Exporting it would
+    only promise an access that works on a direct import and silently fails on
+    the recommended one.
 
 .EXAMPLE
     if ((Get-UIContext).Backend -eq 'Native') { ... }
@@ -614,8 +615,6 @@ Export-ModuleMember -Function @(
     'Write-Summary',
     'Read-Selection',
     'Read-FolderSelection'
-) -Variable @(
-    'UIContext'
 )
 
 #endregion

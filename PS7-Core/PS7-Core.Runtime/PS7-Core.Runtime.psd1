@@ -2,8 +2,11 @@
     # Script module or binary module file associated with this manifest.
     RootModule        = 'PS7-Core.Runtime.psm1'
 
-    # Version number of this module.
-    ModuleVersion     = '1.0.0'
+    # Version number of this module. Single source of truth for the whole
+    # library: the four manifests move together. The submodules never ship on
+    # their own — the junction targets the parent and consumers import PS7-Core —
+    # so a version of their own would inform nobody and drift instead.
+    ModuleVersion     = '1.2.1'
 
     # ID used to uniquely identify this module
     GUID              = '90fe6b3c-f631-46b2-b72e-a6a5d790aa49'
@@ -41,7 +44,6 @@
             Tags         = @('PowerShell', 'Runtime', 'PS7', 'Core')
             LicenseUri   = ''
             ProjectUri   = ''
-            ReleaseNotes = 'v2.0.0 - PS7-only guard (Assert-PowerShell7), re-invocation logic removed.'
         }
     }
 }

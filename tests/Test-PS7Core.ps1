@@ -1,12 +1,14 @@
 ﻿<#
 .SYNOPSIS
-    Tests automatisés pour PS7-Core.Runtime (garde PS7) et PS7-Core.UI (Spectre).
+    Tests automatisés pour PS7-Core.Runtime, PS7-Core.UI et PS7-Core.Crypto.
 
 .DESCRIPTION
     Vérifie le bon fonctionnement de :
       1. Assert-PowerShell7 — no-op sous PS7+, erreur sous une version inférieure.
       2. Initialize-EnhancedUI / Write-StatusMessage / Write-Header /
          Write-ProgressBar — provider Spectre.Console, sortie colorée.
+      3. Get-FileHashExtended / Get-StringHash / Test-FileIntegrity — comparés à
+         des vecteurs de référence publics, pas à une seconde exécution du code.
 
     PwshSpectreConsole est requis et n'est plus auto-installé par les scripts ;
     -AutoInstallSpectre installe le module pour le test si absent.
@@ -424,6 +426,90 @@ if (-not $OnlyRuntime) {
         # redirected-input guard fires and every candidate is kept unfiltered.
         $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b' -Interactive)
         return ($result.Count -eq 2)
+    }
+}
+
+#endregion
+
+
+#region PS7-Core.Crypto tests
+################################################################################
+
+if (-not $OnlyRuntime -and -not $OnlyUI) {
+    Write-TestHeader "PS7-Core.Crypto - hachage de fichiers et de chaines"
+
+    # Vecteurs de reference publics : le hachage est un contrat exact, on compare
+    # a des constantes connues plutot qu'a une seconde execution du meme code.
+    $abcSha256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+    $abcMd5 = '900150983cd24fb0d6963f7d28e17f72'
+
+    $cryptoDir = Join-Path $tempDir 'crypto'
+    New-Item -ItemType Directory -Path $cryptoDir -Force | Out-Null
+
+    # -Encoding Byte n'existe plus en PS7 : on ecrit les octets directement pour
+    # ne pas laisser Set-Content ajouter une fin de ligne au vecteur.
+    $abcFile = Join-Path $cryptoDir 'abc.txt'
+    [System.IO.File]::WriteAllBytes($abcFile, [System.Text.Encoding]::ASCII.GetBytes('abc'))
+
+    # Nom canonique d'un doublon telecharge, et motif joker pour -Path : c'est le
+    # cas qui distingue Test-Path -Path de -LiteralPath.
+    $bracketFile = Join-Path $cryptoDir 'copie[1].txt'
+    [System.IO.File]::WriteAllBytes($bracketFile, [System.Text.Encoding]::ASCII.GetBytes('abc'))
+
+    Test-Case "Get-StringHash SHA256 matches the reference vector" {
+        return ((Get-StringHash -String 'abc') -eq $abcSha256)
+    }
+
+    Test-Case "Get-StringHash honours -Algorithm and -UpperCase" {
+        return (
+            (Get-StringHash -String 'abc' -Algorithm MD5) -eq $abcMd5 -and
+            (Get-StringHash -String 'abc' -UpperCase) -eq $abcSha256.ToUpper()
+        )
+    }
+
+    Test-Case "Get-StringHash is encoding-sensitive" {
+        # Un meme texte hache differemment en UTF8 et en Unicode : verifie que le
+        # parametre est reellement pris en compte, pas ignore silencieusement.
+        return ((Get-StringHash -String 'abc' -Encoding Unicode) -ne $abcSha256)
+    }
+
+    Test-Case "Get-FileHashExtended matches the reference vector" {
+        return ((Get-FileHashExtended -Path $abcFile) -eq $abcSha256)
+    }
+
+    Test-Case "Get-FileHashExtended hashes a name containing brackets" {
+        return ((Get-FileHashExtended -Path $bracketFile) -eq $abcSha256)
+    }
+
+    Test-Case "Get-FileHashExtended errors on a missing file" {
+        $result = Get-FileHashExtended -Path (Join-Path $cryptoDir 'absent.txt') -ErrorAction SilentlyContinue
+        return ($null -eq $result)
+    }
+
+    Test-Case "Get-FileHashExtended rejects a directory" {
+        $result = Get-FileHashExtended -Path $cryptoDir -ErrorAction SilentlyContinue
+        return ($null -eq $result)
+    }
+
+    Test-Case "Test-FileIntegrity accepts the expected hash, any case" {
+        return (
+            (Test-FileIntegrity -Path $abcFile -ExpectedHash $abcSha256) -and
+            (Test-FileIntegrity -Path $abcFile -ExpectedHash $abcSha256.ToUpper())
+        )
+    }
+
+    Test-Case "Test-FileIntegrity rejects a mismatched hash" {
+        $wrong = '0' * 64
+        return (-not (Test-FileIntegrity -Path $abcFile -ExpectedHash $wrong -WarningAction SilentlyContinue))
+    }
+
+    Test-Case "Test-FileIntegrity compares with the requested algorithm" {
+        return (Test-FileIntegrity -Path $abcFile -ExpectedHash $abcMd5 -Algorithm MD5)
+    }
+
+    Test-Case "Test-FileIntegrity returns false on a missing file" {
+        $missing = Join-Path $cryptoDir 'absent.txt'
+        return (-not (Test-FileIntegrity -Path $missing -ExpectedHash $abcSha256 -ErrorAction SilentlyContinue))
     }
 }
 
