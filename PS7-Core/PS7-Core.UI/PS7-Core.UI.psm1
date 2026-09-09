@@ -32,6 +32,42 @@ $script:UIContext = @{
     Initialized       = $false
 }
 
+# Resolution du logger de PS7-Core.Runtime, faite UNE SEULE FOIS. L'appel
+# traverse la frontiere de sous-module imbrique : c'est un chemin que le projet
+# n'empruntait pas avant le logging, et une sonde de test le couvre.
+# Le drapeau separe evite de re-sonder a chaque appel quand la fonction est
+# absente (import direct de PS7-Core.UI, hors du meta-module).
+$script:LogWriterProbed = $false
+$script:LogWriter = $null
+
+# Correspondance Type d'affichage -> niveau de log. Success et Skipped sont de
+# l'information : ils ne meritent pas un niveau a eux.
+$script:LogLevelForType = @{
+    Info    = 'Info'
+    Success = 'Info'
+    Skipped = 'Info'
+    Debug   = 'Debug'
+    Warning = 'Warning'
+    Error   = 'Error'
+}
+
+function Write-TeeLog {
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Message,
+        [string]$Level = 'Info'
+    )
+
+    if (-not $script:LogWriterProbed) {
+        $script:LogWriter = Get-Command Write-Log -ErrorAction SilentlyContinue
+        $script:LogWriterProbed = $true
+    }
+    if ($null -eq $script:LogWriter) { return }
+
+    # Write-Log ne leve jamais, mais l'affichage passe avant la trace : si cette
+    # garantie changeait un jour, le tee ne doit toujours rien casser.
+    try { & $script:LogWriter -Message $Message -Level $Level } catch { }
+}
+
 # Set while inside a Spectre Start-ProgressScope; $null otherwise (always $null
 # with the native backend, which has no live region).
 $script:CurrentProgressContext = $null
@@ -278,6 +314,8 @@ function Write-StatusMessage {
         $null = Initialize-EnhancedUI
     }
 
+    Write-TeeLog -Message $Message -Level $script:LogLevelForType[$Type]
+
     if ($script:UIContext.UseSpectreConsole) {
         Write-StatusMessageSpectre -Message $Message -Type $Type
     }
@@ -392,6 +430,8 @@ function Write-Header {
     if (-not $script:UIContext.Initialized) {
         $null = Initialize-EnhancedUI
     }
+
+    Write-TeeLog -Message $Title -Level 'Info'
 
     if ($script:UIContext.UseSpectreConsole) {
         Write-HeaderSpectre -Title $Title -Color $Color

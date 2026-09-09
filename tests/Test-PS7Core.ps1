@@ -217,6 +217,50 @@ if (-not $OnlyUI) {
         }
         catch { return $true }
     }
+
+    Test-Case "PROBE: .UI can resolve Write-Log across the nested boundary" {
+        $ui = (Get-Module PS7-Core).NestedModules | Where-Object Name -eq 'PS7-Core.UI'
+        if (-not $ui) { return $false }
+        $resolved = & $ui { Get-Command Write-Log -ErrorAction SilentlyContinue }
+        return ($null -ne $resolved)
+    }
+
+    Test-Case "Write-StatusMessage feeds the log with its Type as level" {
+        $p = Join-Path $tempDir 'tee.log'
+        Initialize-Logging -Path $p
+        Write-StatusMessage 'teed message' -Type Warning 6>$null
+        $content = Get-Content -Path $p -Raw
+        return ($content -match '\[WARNING\] teed message')
+    }
+
+    Test-Case "Write-Header feeds the log at Info level" {
+        $p = Join-Path $tempDir 'tee-header.log'
+        Initialize-Logging -Path $p
+        Write-Header 'Section title' 6>$null
+        $content = Get-Content -Path $p -Raw
+        return ($content -match '\[INFO   \] Section title')
+    }
+
+    Test-Case "Write-ProgressBar does NOT feed the log" {
+        $p = Join-Path $tempDir 'tee-progress.log'
+        Initialize-Logging -Path $p
+        Write-ProgressBar -Activity 'Work' -Current 1 -Total 2 6>$null
+        Write-ProgressBar -Activity 'Work' -Current 2 -Total 2 -Completed 6>$null
+        $content = Get-Content -Path $p -Raw
+        return ($content -notmatch 'Work')
+    }
+
+    Test-Case "the tee stays silent once logging has disabled itself" {
+        $sub = Join-Path $tempDir 'tee-doomed'
+        $p = Join-Path $sub 'off.log'
+        Initialize-Logging -Path $p
+        Remove-Item -Path $sub -Recurse -Force
+        try {
+            Write-StatusMessage 'no crash' -Type Info -WarningAction SilentlyContinue 6>$null
+            return ((Get-LogContext).Enabled -eq $false)
+        }
+        catch { return $false }
+    }
 }
 
 #endregion
