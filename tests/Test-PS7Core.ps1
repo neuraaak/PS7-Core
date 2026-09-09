@@ -176,7 +176,7 @@ if (-not $OnlyUI) {
         Initialize-Logging -Path $p
         Write-Log -Message 'hello world'
         if (-not (Test-Path $p)) { return $false }
-        $line = (Get-Content -Path $p | Where-Object { $_ -ne '' })[-1]
+        $line = @(Get-Content -Path $p | Where-Object { $_ -ne '' })[-1]
         return ($line -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[INFO   \] hello world$')
     }
 
