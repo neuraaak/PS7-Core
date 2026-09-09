@@ -6,7 +6,7 @@
     # library: the four manifests move together. The submodules never ship on
     # their own — the junction targets the parent and consumers import PS7-Core —
     # so a version of their own would inform nobody and drift instead.
-    ModuleVersion     = '1.2.1'
+    ModuleVersion     = '1.3.0'
 
     # ID used to uniquely identify this module
     GUID              = '90fe6b3c-f631-46b2-b72e-a6a5d790aa49'
@@ -27,7 +27,7 @@
     PowerShellVersion = '7.0'
 
     # Functions to export from this module
-    FunctionsToExport = @('Assert-PowerShell7')
+    FunctionsToExport = @('Assert-PowerShell7', 'Initialize-Logging', 'Write-Log', 'Get-LogContext')
 
     # Cmdlets to export from this module
     CmdletsToExport   = @()

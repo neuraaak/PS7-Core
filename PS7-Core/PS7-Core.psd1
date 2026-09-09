@@ -6,7 +6,7 @@
     # library: the four manifests move together. The submodules never ship on
     # their own — the junction targets the parent and consumers import PS7-Core —
     # so a version of their own would inform nobody and drift instead.
-    ModuleVersion     = '1.2.1'
+    ModuleVersion     = '1.3.0'
 
     # ID used to uniquely identify this module
     GUID              = '2dc68349-bad7-414e-aff0-b0e58bf64d47'
@@ -37,6 +37,9 @@
     FunctionsToExport = @(
         # PS7-Core.Runtime
         'Assert-PowerShell7',
+        'Initialize-Logging',
+        'Write-Log',
+        'Get-LogContext',
 
         # PS7-Core.UI
         'Initialize-EnhancedUI',
@@ -75,6 +78,13 @@
             # Cumulative history for the whole library. The submodule manifests
             # carry none: one version, one changelog.
             ReleaseNotes = @'
+1.3.0
+- PS7-Core.Runtime : logging fichier opt-in (Initialize-Logging, Write-Log,
+  Get-LogContext). Aucune dependance ajoutee, rien n'est ecrit sans appel
+  explicite a Initialize-Logging.
+- PS7-Core.UI : Write-StatusMessage et Write-Header alimentent le log quand
+  il est actif. Write-ProgressBar volontairement exclu.
+
 v1.2.1
 - PS7-Core.Crypto: Get-FileHashExtended now resolves paths literally; a name
   containing brackets ('copie[1].txt') was reported as not found.
