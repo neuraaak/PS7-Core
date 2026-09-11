@@ -6,7 +6,7 @@
     # library: the four manifests move together. The submodules never ship on
     # their own — the junction targets the parent and consumers import PS7-Core —
     # so a version of their own would inform nobody and drift instead.
-    ModuleVersion     = '1.3.0'
+    ModuleVersion     = '1.4.0'
 
     # ID used to uniquely identify this module
     GUID              = 'd55fbb76-a581-4783-8f86-4ff3f74d42db'
@@ -36,7 +36,10 @@
         'Write-Header',
         'Write-Summary',
         'Read-Selection',
-        'Read-FolderSelection'
+        'Read-FolderSelection',
+        'Read-Confirmation',
+        'Read-TextInput',
+        'Start-Spinner'
     )
 
     # Cmdlets to export from this module
@@ -53,9 +56,9 @@
     # Private data to pass to the module specified in RootModule/ModuleToProcess
     PrivateData       = @{
         PSData = @{
-            Tags         = @('UI', 'Console', 'Spectre', 'Native', 'Output', 'Color')
-            LicenseUri   = ''
-            ProjectUri   = ''
+            Tags       = @('UI', 'Console', 'Spectre', 'Native', 'Output', 'Color')
+            LicenseUri = ''
+            ProjectUri = ''
         }
     }
 }

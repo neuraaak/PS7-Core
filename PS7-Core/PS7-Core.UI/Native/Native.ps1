@@ -227,3 +227,105 @@ function Initialize-ConsoleHostNative {
         Write-Verbose "Failed to set UTF-8 encoding: $_"
     }
 }
+
+function Read-ConfirmationNative {
+    param(
+        [string]$Message,
+        [bool]$DefaultValue
+    )
+
+    # Sert aussi de repli au backend Spectre quand son prompt plante.
+    $hint = if ($DefaultValue) { '[Y/n]' } else { '[y/N]' }
+
+    while ($true) {
+        Write-Host ""
+        $answer = (Read-Host "$Message $hint").Trim()
+
+        # Entrée vide = on accepte le défaut proposé par le libellé.
+        if ([string]::IsNullOrEmpty($answer)) {
+            return $DefaultValue
+        }
+
+        switch -Regex ($answer) {
+            '^(y|yes|o|oui)$' { return $true }
+            '^(n|no|non)$' { return $false }
+            default {
+                Write-StatusMessage "Answer 'y' or 'n'." -Type Warning
+            }
+        }
+    }
+}
+
+function Read-TextInputNative {
+    param(
+        [string]$Message,
+        [string]$Default,
+        [bool]$HasDefault,
+        [bool]$AllowEmpty,
+        [scriptblock]$Validate
+    )
+
+    $hint = if ($HasDefault -and -not [string]::IsNullOrEmpty($Default)) { " [$Default]" } else { '' }
+
+    while ($true) {
+        Write-Host ""
+        $answer = (Read-Host "$Message$hint").Trim()
+
+        if ([string]::IsNullOrEmpty($answer) -and $HasDefault) {
+            $answer = $Default
+        }
+
+        $rejection = Get-TextInputRejectionNative -Value $answer -AllowEmpty $AllowEmpty -Validate $Validate
+
+        if ($null -eq $rejection) {
+            return $answer
+        }
+
+        Write-StatusMessage $rejection -Type Warning
+    }
+}
+
+function Get-TextInputRejectionNative {
+    <#
+        Retourne $null quand la valeur est acceptable, sinon le motif du refus.
+        Partagé par les deux backends ET par la garde non-interactive : c'est le
+        seul endroit qui décide ce qu'est une saisie valide, pour qu'une valeur
+        refusée à l'invite ne puisse pas être acceptée comme défaut.
+    #>
+    param(
+        [string]$Value,
+        [bool]$AllowEmpty,
+        [scriptblock]$Validate
+    )
+
+    if ([string]::IsNullOrEmpty($Value) -and -not $AllowEmpty) {
+        return 'A value is required.'
+    }
+
+    if ($null -eq $Validate) {
+        return $null
+    }
+
+    # $_ dans le scriptblock de validation : c'est la convention PowerShell
+    # (ValidateScript), et l'appelant l'attend plutôt qu'un paramètre nommé.
+    $accepted = ForEach-Object -InputObject $Value -Process $Validate
+
+    if ($accepted) {
+        return $null
+    }
+
+    return "Value '$Value' is not valid."
+}
+
+function Start-SpinnerNative {
+    param(
+        [string]$Message,
+        [scriptblock]$ScriptBlock
+    )
+
+    # Pas d'animation ici : la faire tourner demanderait un runspace concurrent
+    # pour un gain purement cosmétique. Le backend natif annonce puis exécute,
+    # comme il le fait déjà pour la barre de progression.
+    Write-StatusMessage "$Message..." -Type Info
+    return & $ScriptBlock
+}

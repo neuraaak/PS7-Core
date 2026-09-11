@@ -21,7 +21,7 @@ tests/                     suite de tests et test interactif
 
 - PowerShell **7.0+** — seul prérequis strict.
 - [`PwshSpectreConsole`](https://www.powershellgallery.com/packages/PwshSpectreConsole)
-  ≥ 2.3.0 — *optionnel* : `Install-Module -Name PwshSpectreConsole -Scope CurrentUser`
+  ≥ 2.3.0 — _optionnel_ : `Install-Module -Name PwshSpectreConsole -Scope CurrentUser`
 
 ## Les deux backends d'affichage
 
@@ -99,7 +99,7 @@ if ($ps7Core.Version -lt [version]'1.2.1') {
 }
 ```
 
-> **N'utilisez pas `#Requires -Modules` ici.** La directive est évaluée *avant*
+> **N'utilisez pas `#Requires -Modules` ici.** La directive est évaluée _avant_
 > le corps du script, donc avant que celui-ci ait complété `PSModulePath` : avec
 > une liaison par jonction elle échoue systématiquement. Le contrôle de version
 > se fait donc après l'import, et **hors du `try`** — sinon une version
@@ -124,15 +124,18 @@ jonction de répertoire vers `PS7-Core/`, posée à l'emplacement du script.
 
 | Fonction                | Rôle                                                                     |
 | ----------------------- | ------------------------------------------------------------------------ |
-| `Initialize-EnhancedUI` | Initialise la console et résout le backend (`Auto`/`Spectre`/`Native`)  |
+| `Initialize-EnhancedUI` | Initialise la console et résout le backend (`Auto`/`Spectre`/`Native`)   |
 | `Write-Header`          | En-tête de section                                                       |
-| `Get-UIContext`         | Backend actif et état d'initialisation                                  |
+| `Get-UIContext`         | Backend actif et état d'initialisation                                   |
 | `Write-StatusMessage`   | Message typé (`Info`, `Success`, `Warning`, `Error`, `Skipped`, `Debug`) |
 | `Write-ProgressBar`     | Barre de progression                                                     |
 | `Write-Summary`         | Résumé de fin d'exécution                                                |
 | `Read-Selection`        | Invite à cocher générique (Spectre), repli texte si l'appel échoue       |
 | `Read-FolderSelection`  | Racine + sous-dossiers directs, exclusion par nom, sélection optionnelle |
-| `Start-ProgressScope`   | Bascule `Write-ProgressBar`/`Write-StatusMessage` en rendu Spectre live |
+| `Start-ProgressScope`   | Bascule `Write-ProgressBar`/`Write-StatusMessage` en rendu Spectre live  |
+| `Read-Confirmation`     | Question oui/non ; rend `-DefaultValue` quand l'entrée est redirigée     |
+| `Read-TextInput`        | Saisie d'une ligne, avec `-Default`, `-AllowEmpty` et `-Validate`        |
+| `Start-Spinner`         | Indicateur d'activité pour un travail de durée inconnue                  |
 
 `Start-ProgressScope` ouvre une région live Spectre. Avec le backend natif il
 n'y a pas de région à ouvrir — `Write-ProgressBar` utilise directement
@@ -150,6 +153,36 @@ pareil sur l'autre.
 > sait pas imbriquer deux régions live, et l'imbrication de scopes lève une
 > erreur.
 
+`Start-Spinner` couvre le cas que `Write-ProgressBar` ne sait pas traiter : un
+travail dont on ignore la durée, donc sans pourcentage à afficher. Les deux
+s'excluent mutuellement — Spectre ne sait empiler ni un Status dans un Progress
+ni l'inverse, et le refus est explicite dans les deux sens pour que le contrat
+ne dépende pas du backend actif. Le backend natif **n'anime pas** le spinner :
+il annonce puis exécute, comme il le fait déjà pour la barre de progression.
+
+#### Invites sans console
+
+`Read-Confirmation` et `Read-TextInput` ne peuvent pas bloquer sur un hôte où
+l'entrée est redirigée (CI, pipe, harnais de test). La règle est unique :
+**rendre le défaut s'il existe, lever sinon.**
+
+| Appel                                              | Entrée redirigée           |
+| -------------------------------------------------- | -------------------------- |
+| `Read-Confirmation -Message m`                     | `$false` (+ avertissement) |
+| `Read-Confirmation -Message m -DefaultValue $true` | `$true` (+ avertissement)  |
+| `Read-TextInput -Message m -Default d`             | `d` (+ avertissement)      |
+| `Read-TextInput -Message m`                        | **lève**                   |
+
+`Read-Confirmation` a toujours un défaut, donc ne lève jamais : une exécution
+sans surveillance ne confirme rien que personne n'a approuvé. `Read-TextInput`
+n'en a pas toujours, et rendre `''` en silence laisserait un script continuer
+avec une valeur que personne n'a choisie. `-Default` est d'ailleurs soumis aux
+mêmes règles qu'une saisie : un défaut vide sans `-AllowEmpty`, ou refusé par
+`-Validate`, lève plutôt que de passer sans contrôle.
+
+Il n'y a **pas** de commutateur `-Force` : l'appelant qui veut piloter le mode
+non interactif fournit déjà `-DefaultValue` / `-Default`.
+
 ### Logging fichier
 
 Le logging est **opt-in** : tant que `Initialize-Logging` n'a pas ete
@@ -163,11 +196,11 @@ Write-StatusMessage "Traitement demarre" -Type Info   # affiche ET logue
 Write-Log -Message "detail interne" -Level Debug      # logue seulement
 ```
 
-| Fonction | Role |
-| --- | --- |
+| Fonction                                           | Role                                                     |
+| -------------------------------------------------- | -------------------------------------------------------- |
 | `Initialize-Logging -Path <f> [-MinimumLevel <n>]` | Active le log. Peut lever si le chemin est inutilisable. |
-| `Write-Log -Message <m> [-Level <n>]` | Ecrit une ligne. Ne leve jamais. |
-| `Get-LogContext` | Etat courant : `Enabled`, `Path`, `MinimumLevel`. |
+| `Write-Log -Message <m> [-Level <n>]`              | Ecrit une ligne. Ne leve jamais.                         |
+| `Get-LogContext`                                   | Etat courant : `Enabled`, `Path`, `MinimumLevel`.        |
 
 Niveaux : `Debug` < `Info` (defaut) < `Warning` < `Error`.
 

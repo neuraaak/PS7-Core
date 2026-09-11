@@ -164,3 +164,68 @@ function Read-SelectionSpectre {
         }
     )
 }
+
+function Read-ConfirmationSpectre {
+    param(
+        [string]$Message,
+        [bool]$DefaultValue
+    )
+
+    return [bool](Read-SpectreConfirm -Message (Get-SpectreEscapedText -Text $Message) `
+            -DefaultAnswer $(if ($DefaultValue) { 'y' } else { 'n' }))
+}
+
+function Read-TextInputSpectre {
+    param(
+        [string]$Message,
+        [string]$Default,
+        [bool]$HasDefault,
+        [bool]$AllowEmpty,
+        [scriptblock]$Validate
+    )
+
+    $escaped = Get-SpectreEscapedText -Text $Message
+
+    while ($true) {
+        $params = @{ Message = $escaped }
+
+        if ($HasDefault) { $params['DefaultAnswer'] = $Default }
+        if ($AllowEmpty) { $params['AllowEmpty'] = $true }
+
+        $answer = [string](Read-SpectreText @params)
+
+        $rejection = Get-TextInputRejectionNative -Value $answer -AllowEmpty $AllowEmpty -Validate $Validate
+
+        if ($null -eq $rejection) {
+            return $answer
+        }
+
+        # Read-SpectreText ne porte pas de validateur : on redemande nous-mêmes
+        # plutôt que de rendre une valeur que l'appelant a déjà refusée.
+        Write-StatusMessage $rejection -Type Warning
+    }
+}
+
+function Start-SpinnerSpectre {
+    param(
+        [string]$Message,
+        [scriptblock]$ScriptBlock,
+        [string]$Spinner
+    )
+
+    # Même raison que Start-ProgressScopeSpectre : pas de .GetNewClosure(), le
+    # scriptblock utilisateur passe par une variable de module pour que ses
+    # écritures restent visibles depuis la vraie portée du module.
+    $script:ActiveSpinnerScriptBlock = $ScriptBlock
+
+    $wrapped = { & $script:ActiveSpinnerScriptBlock }
+
+    try {
+        return Invoke-SpectreCommandWithStatus -ScriptBlock $wrapped `
+            -Title (Get-SpectreEscapedText -Text $Message) `
+            -Spinner $Spinner
+    }
+    finally {
+        $script:ActiveSpinnerScriptBlock = $null
+    }
+}

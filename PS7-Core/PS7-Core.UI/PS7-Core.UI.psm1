@@ -85,6 +85,13 @@ $script:ActiveScopeScriptBlock = $null
 # context, so $script:CurrentProgressContext cannot be used to detect nesting.
 $script:InProgressScope = $false
 
+# Nesting sentinel for Start-Spinner, set by BOTH backends for the same reason.
+$script:InSpinner = $false
+
+# The user scriptblock passed to Start-Spinner, while it is running; $null
+# otherwise. Same rationale as $script:ActiveScopeScriptBlock.
+$script:ActiveSpinnerScriptBlock = $null
+
 # The "falling back to native" notice is emitted once per session, not per call.
 $script:FallbackNoticeShown = $false
 
@@ -262,6 +269,12 @@ function Start-ProgressScope {
 
     if ($script:InProgressScope) {
         throw "Start-ProgressScope does not support nesting."
+    }
+
+    # Miroir du refus pose par Start-Spinner : Spectre ne sait pas davantage
+    # empiler un Progress dans un Status, l'interdit vaut donc dans les 2 sens.
+    if ($script:InSpinner) {
+        throw "Start-ProgressScope cannot run inside Start-Spinner."
     }
 
     $script:InProgressScope = $true
@@ -642,6 +655,220 @@ function Read-FolderSelection {
 #endregion
 
 
+<#
+.SYNOPSIS
+    Asks a yes/no question through the active backend.
+
+.DESCRIPTION
+    When the input is redirected (CI, a pipe, a test host) there is no console to
+    prompt on: the function warns and returns -DefaultValue instead of blocking.
+    The default is $false, so an unattended run never confirms an action nobody
+    approved.
+
+.PARAMETER Message
+    The question to display.
+
+.PARAMETER DefaultValue
+    The answer returned on an empty reply, and when the input is redirected.
+
+.OUTPUTS
+    Boolean.
+
+.EXAMPLE
+    if (Read-Confirmation -Message 'Delete the folder?') { Remove-Item $path }
+#>
+function Read-Confirmation {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()][AllowEmptyString()]
+        [string]$Message,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$DefaultValue = $false
+    )
+
+    if (-not $script:UIContext.Initialized) {
+        $null = Initialize-EnhancedUI
+    }
+
+    if ([Console]::IsInputRedirected) {
+        Write-StatusMessage "Input is redirected, confirmation skipped: answering '$(if ($DefaultValue) { 'yes' } else { 'no' })'." -Type Warning
+        return $DefaultValue
+    }
+
+    if ($script:UIContext.UseSpectreConsole) {
+        try {
+            return Read-ConfirmationSpectre -Message $Message -DefaultValue $DefaultValue
+        }
+        catch {
+            Write-StatusMessage "Interactive prompt failed, falling back to text mode - $($_.Exception.Message)" -Type Warning
+        }
+    }
+
+    return Read-ConfirmationNative -Message $Message -DefaultValue $DefaultValue
+}
+
+
+<#
+.SYNOPSIS
+    Reads a line of text through the active backend.
+
+.DESCRIPTION
+    Interactively, the prompt repeats until the answer satisfies -AllowEmpty and
+    -Validate. When the input is redirected there is nothing to repeat, so the
+    contract is: return -Default if the caller supplied one, otherwise throw.
+    Returning an empty string instead would let a script carry on with a value
+    nobody chose.
+
+    -Default is held to the same rules as a typed answer: a default that
+    -Validate rejects, or an empty one without -AllowEmpty, throws rather than
+    passing through unchecked.
+
+.PARAMETER Message
+    The prompt to display.
+
+.PARAMETER Default
+    Value used on an empty reply, and returned when the input is redirected.
+
+.PARAMETER AllowEmpty
+    Accept an empty answer. Without it, an empty answer is refused.
+
+.PARAMETER Validate
+    Scriptblock receiving the answer as $_ and returning $true to accept it.
+
+.OUTPUTS
+    String.
+
+.EXAMPLE
+    $port = Read-TextInput -Message 'Port' -Default '8080' -Validate { $_ -match '^\d+$' }
+#>
+function Read-TextInput {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()][AllowEmptyString()]
+        [string]$Message,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Default,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$AllowEmpty,
+
+        [Parameter(Mandatory = $false)]
+        [scriptblock]$Validate
+    )
+
+    if (-not $script:UIContext.Initialized) {
+        $null = Initialize-EnhancedUI
+    }
+
+    $hasDefault = $PSBoundParameters.ContainsKey('Default')
+
+    if ([Console]::IsInputRedirected) {
+        if (-not $hasDefault) {
+            throw "Input is redirected and no -Default was supplied: Read-TextInput has no value to return for '$Message'."
+        }
+
+        $rejection = Get-TextInputRejectionNative -Value $Default -AllowEmpty $AllowEmpty.IsPresent -Validate $Validate
+
+        if ($null -ne $rejection) {
+            throw "Input is redirected and the supplied -Default is not usable: $rejection"
+        }
+
+        Write-StatusMessage "Input is redirected, prompt skipped: using the supplied default." -Type Warning
+        return $Default
+    }
+
+    if ($script:UIContext.UseSpectreConsole) {
+        try {
+            return Read-TextInputSpectre -Message $Message -Default $Default -HasDefault $hasDefault -AllowEmpty $AllowEmpty.IsPresent -Validate $Validate
+        }
+        catch {
+            Write-StatusMessage "Interactive prompt failed, falling back to text mode - $($_.Exception.Message)" -Type Warning
+        }
+    }
+
+    return Read-TextInputNative -Message $Message -Default $Default -HasDefault $hasDefault -AllowEmpty $AllowEmpty.IsPresent -Validate $Validate
+}
+
+
+<#
+.SYNOPSIS
+    Runs a scriptblock behind a spinner, for work of unknown duration.
+
+.DESCRIPTION
+    Use it where Write-ProgressBar does not apply: no countable steps, so no
+    percentage to show. The spinner lives exactly as long as the scriptblock and
+    is torn down even when the block throws.
+
+    The native backend does not animate - it announces the message, then runs -
+    because animating without Spectre would need a concurrent runspace for a
+    purely cosmetic gain.
+
+.PARAMETER Message
+    The label shown next to the spinner.
+
+.PARAMETER ScriptBlock
+    The work to run. Its value is returned to the caller.
+
+.PARAMETER Spinner
+    Spinner style, Spectre backend only. Ignored by the native one.
+
+.OUTPUTS
+    Whatever the scriptblock returns.
+
+.EXAMPLE
+    $releases = Start-Spinner -Message 'Contacting the API' -ScriptBlock {
+        Invoke-RestMethod https://example.invalid/releases
+    }
+#>
+function Start-Spinner {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()][AllowEmptyString()]
+        [string]$Message,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Spinner = 'Dots'
+    )
+
+    if (-not $script:UIContext.Initialized) {
+        $null = Initialize-EnhancedUI
+    }
+
+    if ($script:InSpinner) {
+        throw "Start-Spinner does not support nesting."
+    }
+
+    # Spectre ne sait pas empiler un Status dans un Progress. Le refus est
+    # explicite et vaut pour les deux backends : sinon le contrat dependrait du
+    # backend actif, et un script valide en natif casserait sous Spectre.
+    if ($script:InProgressScope) {
+        throw "Start-Spinner cannot run inside Start-ProgressScope."
+    }
+
+    $script:InSpinner = $true
+    try {
+        if ($script:UIContext.UseSpectreConsole) {
+            return Start-SpinnerSpectre -Message $Message -ScriptBlock $ScriptBlock -Spinner $Spinner
+        }
+        return Start-SpinnerNative -Message $Message -ScriptBlock $ScriptBlock
+    }
+    finally {
+        $script:InSpinner = $false
+    }
+}
+
+
 #region Module Initialization
 
 # Export module members
@@ -654,7 +881,10 @@ Export-ModuleMember -Function @(
     'Write-Header',
     'Write-Summary',
     'Read-Selection',
-    'Read-FolderSelection'
+    'Read-FolderSelection',
+    'Read-Confirmation',
+    'Read-TextInput',
+    'Start-Spinner'
 )
 
 #endregion

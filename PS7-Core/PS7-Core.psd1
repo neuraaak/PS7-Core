@@ -6,7 +6,7 @@
     # library: the four manifests move together. The submodules never ship on
     # their own — the junction targets the parent and consumers import PS7-Core —
     # so a version of their own would inform nobody and drift instead.
-    ModuleVersion     = '1.3.0'
+    ModuleVersion     = '1.4.0'
 
     # ID used to uniquely identify this module
     GUID              = '2dc68349-bad7-414e-aff0-b0e58bf64d47'
@@ -51,6 +51,9 @@
         'Write-Summary',
         'Read-Selection',
         'Read-FolderSelection',
+        'Read-Confirmation',
+        'Read-TextInput',
+        'Start-Spinner',
 
         # PS7-Core.Crypto
         'Get-FileHashExtended',

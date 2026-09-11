@@ -91,6 +91,23 @@ function Test-Case {
     }
 }
 
+function Test-Rejects {
+    <#
+        Vrai quand l'appel leve POUR UNE RAISON METIER. Un simple try/catch ne
+        suffit pas : une commande absente leve elle aussi, ce qui ferait passer
+        au vert un test ecrit avant la fonction — sans rien prouver.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$Body)
+
+    try {
+        & $Body | Out-Null
+        return $false
+    }
+    catch {
+        return -not ($_.Exception -is [System.Management.Automation.CommandNotFoundException])
+    }
+}
+
 #endregion
 
 
@@ -533,6 +550,116 @@ if (-not $OnlyRuntime) {
         # redirected-input guard fires and every candidate is kept unfiltered.
         $result = @(Read-FolderSelection -Path $rfsRoot -ExcludeName 'excluded-a', 'excluded-b' -Interactive)
         return ($result.Count -eq 2)
+    }
+}
+
+#endregion
+
+
+#region Read-Confirmation
+
+if (-not $OnlyRuntime) {
+    Write-TestHeader "PS7-Core.UI — Read-Confirmation"
+
+    # Toutes ces assertions reposent sur [Console]::IsInputRedirected : dans cet
+    # hote de test stdin EST redirige, donc la garde non-interactive tranche et
+    # aucune invite ne bloque la passe.
+
+    Test-Case "redirected input returns the false default" {
+        return ((Read-Confirmation -Message 'Proceed?') -eq $false)
+    }
+
+    Test-Case "redirected input returns an explicit -DefaultValue" {
+        return ((Read-Confirmation -Message 'Proceed?' -DefaultValue $true) -eq $true)
+    }
+
+    Test-Case "returns a real boolean, not a truthy string" {
+        return ((Read-Confirmation -Message 'Proceed?' -DefaultValue $true) -is [bool])
+    }
+}
+
+#endregion
+
+
+#region Read-TextInput
+
+if (-not $OnlyRuntime) {
+    Write-TestHeader "PS7-Core.UI — Read-TextInput"
+
+    Test-Case "redirected input returns -Default" {
+        return ((Read-TextInput -Message 'Name?' -Default 'fallback') -eq 'fallback')
+    }
+
+    Test-Case "redirected input without -Default throws" {
+        return Test-Rejects { Read-TextInput -Message 'Name?' }
+    }
+
+    Test-Case "an empty -Default is honoured when -AllowEmpty is set" {
+        return ((Read-TextInput -Message 'Name?' -Default '' -AllowEmpty) -eq '')
+    }
+
+    Test-Case "an empty -Default without -AllowEmpty throws" {
+        return Test-Rejects { Read-TextInput -Message 'Name?' -Default '' }
+    }
+
+    Test-Case "a -Default rejected by -Validate throws" {
+        return Test-Rejects { Read-TextInput -Message 'Number?' -Default 'abc' -Validate { $_ -match '^\d+$' } }
+    }
+
+    Test-Case "a -Default accepted by -Validate is returned" {
+        return ((Read-TextInput -Message 'Number?' -Default '42' -Validate { $_ -match '^\d+$' }) -eq '42')
+    }
+}
+
+#endregion
+
+
+#region Start-Spinner
+
+if (-not $OnlyRuntime) {
+    Write-TestHeader "PS7-Core.UI — Start-Spinner"
+
+    Test-Case "returns the scriptblock's value" {
+        return ((Start-Spinner -Message 'Working' -ScriptBlock { 'done' }) -eq 'done')
+    }
+
+    Test-Case "nesting is refused" {
+        return Test-Rejects {
+            Start-Spinner -Message 'outer' -ScriptBlock {
+                Start-Spinner -Message 'inner' -ScriptBlock { }
+            }
+        }
+    }
+
+    Test-Case "calling it inside Start-ProgressScope is refused" {
+        # Spectre ne sait pas empiler un Status dans un Progress : le refus est
+        # explicite plutot que de dependre du backend actif.
+        return Test-Rejects {
+            Start-ProgressScope -ScriptBlock {
+                Start-Spinner -Message 'inner' -ScriptBlock { }
+            }
+        }
+    }
+
+    Test-Case "calling Start-ProgressScope inside it is refused" {
+        # Le miroir du refus precedent : Spectre ne sait pas davantage empiler un
+        # Progress dans un Status, l'interdit doit donc valoir dans les 2 sens.
+        return Test-Rejects {
+            Start-Spinner -Message 'outer' -ScriptBlock {
+                Start-ProgressScope -ScriptBlock { }
+            }
+        }
+    }
+
+    Test-Case "an error in the scriptblock propagates" {
+        return Test-Rejects { Start-Spinner -Message 'Working' -ScriptBlock { throw 'boom' } }
+    }
+
+    Test-Case "state is cleaned up after a failing scriptblock" {
+        # Sans nettoyage en finally, le drapeau d'imbrication resterait arme et
+        # ce second appel echouerait par "nesting refused".
+        try { Start-Spinner -Message 'Working' -ScriptBlock { throw 'boom' } } catch { }
+        return ((Start-Spinner -Message 'Working' -ScriptBlock { 'ok' }) -eq 'ok')
     }
 }
 

@@ -175,7 +175,7 @@ function Invoke-RobustnessChecks {
     # reel (verifie), ce qui figerait cette suite.
     Assert-Check "Write-ProgressBar declare Activity obligatoire" {
         $attr = (Get-Command Write-ProgressBar).Parameters['Activity'].Attributes |
-        Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
         return [bool]($attr.Mandatory -contains $true)
     }
 
@@ -263,6 +263,58 @@ function Invoke-RobustnessChecks {
             $kept.Add('x')
         }
         return ($lost.Count -eq 0) -and ($kept.Count -eq 1)
+    }
+
+    # --- Start-Spinner : contrat et parite --------------------------------
+
+    Assert-Check "Start-Spinner propage la sortie du scriptblock" {
+        $r = Start-Spinner -Message 'travail' -ScriptBlock { 'valeur-de-retour' }
+        return ($r -contains 'valeur-de-retour')
+    }
+
+    Assert-Check "Start-Spinner refuse l'imbrication" {
+        Test-Throws { Start-Spinner -Message 'a' -ScriptBlock { Start-Spinner -Message 'b' -ScriptBlock { } } }
+    }
+
+    Assert-Check "Start-Spinner et Start-ProgressScope se refusent mutuellement" {
+        # Spectre ne sait empiler ni Status dans Progress ni l'inverse : les deux
+        # sens sont refuses explicitement, pour que le contrat ne depende pas du
+        # backend actif.
+        $unSens = Test-Throws { Start-ProgressScope { Start-Spinner -Message 'x' -ScriptBlock { } } }
+        $autreSens = Test-Throws { Start-Spinner -Message 'x' -ScriptBlock { Start-ProgressScope { } } }
+        return $unSens -and $autreSens
+    }
+
+    Assert-Check "Start-Spinner remet l'etat a plat apres une exception" {
+        try { Start-Spinner -Message 'travail' -ScriptBlock { throw 'boum' } } catch { }
+        # Un second appel doit reussir : sinon le sentinelle est reste arme.
+        Start-Spinner -Message 'travail' -ScriptBlock { } | Out-Null
+        return $true
+    }
+
+    Assert-Check "Start-Spinner refuse un scriptblock absent" {
+        Test-Throws { Start-Spinner -Message 'travail' -ScriptBlock $null }
+    }
+
+    # --- Invites : contrat non interactif ---------------------------------
+
+    Assert-Check "Read-Confirmation avec entree redirigee rend le defaut" {
+        # Uniquement valide quand stdin EST redirige : sinon la fonction affiche
+        # une vraie invite et attend l'utilisateur, ce qu'une assertion ne peut
+        # ni piloter ni interpreter.
+        if (-not [Console]::IsInputRedirected) { return 'SKIP' }
+        return ((Read-Confirmation -Message 'continuer ?') -eq $false) -and
+        ((Read-Confirmation -Message 'continuer ?' -DefaultValue $true) -eq $true)
+    }
+
+    Assert-Check "Read-TextInput avec entree redirigee rend -Default" {
+        if (-not [Console]::IsInputRedirected) { return 'SKIP' }
+        return (Read-TextInput -Message 'nom ?' -Default 'repli') -eq 'repli'
+    }
+
+    Assert-Check "Read-TextInput redirige sans -Default leve" {
+        if (-not [Console]::IsInputRedirected) { return 'SKIP' }
+        return Test-Throws { Read-TextInput -Message 'nom ?' }
     }
 
     Assert-Check "Get-UIContext expose le backend reellement actif" {
