@@ -399,6 +399,43 @@ if (-not $OnlyRuntime) {
             return ($script:sawSpectreTask -and $tasksEmpty -and $contextNull)
         }
 
+        Test-Case "Write-ProgressBar stores a markup-safe task description" {
+            if (-not $script:IsSpectreRun) { return 'SKIP' }
+            # Spectre lit le libelle d'une tache comme du markup : non echappe, un
+            # "[1/3]" y designe un style introuvable et lever l'exception ARRETE le
+            # processus. On ne peut pas declencher le rendu ici (sortie redirigee,
+            # Spectre ne peint rien), donc on verifie l'invariant en amont : ce qui
+            # est STOCKE dans Description doit passer le parseur de markup.
+            $uiModule = (Get-Module PS7-Core).NestedModules | Where-Object Name -eq "PS7-Core.UI"
+            $raw = '[1/3] etape'
+            $script:storedDescription = $null
+            $script:sawRawKey = $false
+            Start-ProgressScope -ScriptBlock {
+                Write-ProgressBar -Activity $raw -Current 1 -Total 3 -Status '[a] projet'
+                # La cle du dictionnaire doit rester l'Activity BRUTE : seul ce qui
+                # part vers Spectre est echappe.
+                # Litteral inline : $using: n'est pas valide avec `& $module {}`.
+                $script:sawRawKey = & $uiModule { $script:ProgressTasks.ContainsKey('[1/3] etape') }
+                $script:storedDescription = & $uiModule { $script:ProgressTasks['[1/3] etape'].Description }
+                Write-ProgressBar -Activity $raw -Completed
+            } | Out-Null
+
+            if (-not $script:sawRawKey) { return $false }
+            if ([string]::IsNullOrEmpty($script:storedDescription)) { return $false }
+
+            # Garde-fou : le libelle brut DOIT faire lever le parseur, sinon ce test
+            # ne prouve rien.
+            $rawThrows = $false
+            try { $null = [Spectre.Console.Markup]::new($raw) }
+            catch { $rawThrows = $true }
+
+            $safeParses = $true
+            try { $null = [Spectre.Console.Markup]::new($script:storedDescription) }
+            catch { $safeParses = $false }
+
+            return ($rawThrows -and $safeParses)
+        }
+
         Test-Case "Start-ProgressScope does not support nesting" {
             try {
                 Start-ProgressScope -ScriptBlock {

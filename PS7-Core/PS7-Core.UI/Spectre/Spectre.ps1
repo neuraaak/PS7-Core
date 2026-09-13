@@ -20,6 +20,19 @@ function Test-SpectreAvailable {
     return [bool](Get-Command Write-SpectreHost -ErrorAction SilentlyContinue)
 }
 
+function ConvertTo-SpectreSafeText {
+    <#
+        Neutralise le markup Spectre dans du texte venu de l'appelant. Spectre lit
+        `[xxx]` comme une reference de style : un texte non echappe contenant des
+        crochets fait lever un InvalidOperationException ("Could not find color or
+        style") qui arrete le processus. Le doublement des crochets est
+        l'echappement officiel de Spectre.Console.
+    #>
+    param([string]$Text)
+
+    return $Text -replace '\[', '[[' -replace '\]', ']]'
+}
+
 function Write-StatusMessageSpectre {
     param(
         [string]$Message,
@@ -29,7 +42,7 @@ function Write-StatusMessageSpectre {
     # Le markup est requis pour la couleur : Write-SpectreHost sans [tags] rend
     # du texte brut. On échappe les [ ] du contenu utilisateur pour ne pas casser
     # le parseur de markup.
-    $safe = $Message -replace '\[', '[[' -replace '\]', ']]'
+    $safe = ConvertTo-SpectreSafeText $Message
     $markup = switch ($Type) {
         'Info' { "[cyan]$safe[/]" }
         'Success' { "[green]OK:[/] $safe" }
@@ -76,8 +89,11 @@ function Write-ProgressBarSpectre {
     # Appelée uniquement depuis l'intérieur d'un Start-ProgressScope Spectre :
     # une tâche du ProgressContext live par Activity distincte, pour que barre et
     # flot de messages coexistent sans corrompre la console.
+    # La cle du dictionnaire reste l'Activity brute ; seul ce qui part vers
+    # Spectre est echappe.
     if (-not $script:ProgressTasks.ContainsKey($Activity)) {
-        $script:ProgressTasks[$Activity] = $script:CurrentProgressContext.AddTask($Activity)
+        $script:ProgressTasks[$Activity] = $script:CurrentProgressContext.AddTask(
+            (ConvertTo-SpectreSafeText $Activity))
     }
     $task = $script:ProgressTasks[$Activity]
 
@@ -91,7 +107,13 @@ function Write-ProgressBarSpectre {
     $percentComplete = if ($Total -gt 0) { ($Current / $Total) * 100 } else { 0 }
     $percentComplete = [Math]::Min(100, [Math]::Max(0, $percentComplete))
 
-    $task.Description = if ($Status) { "$Activity - $Status" } else { $Activity }
+    # Description est du markup, comme le libelle passe a AddTask : sans
+    # echappement, un -Status "[1/3] projet" arrete le processus.
+    $safeActivity = ConvertTo-SpectreSafeText $Activity
+    $task.Description = if ($Status) {
+        "$safeActivity - $(ConvertTo-SpectreSafeText $Status)"
+    }
+    else { $safeActivity }
     $task.Value = $percentComplete
 }
 
